@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.egg-info/
+dist/
+build/
+*.egg
+
+# Virtual environment
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Artifacts — large replay/validation run outputs
+algorithmic_futures/artifacts/
+algorithmic_futures/logs/
+algorithmic_futures/data/cache/
+
+# Databento cache
+*.dbn.zst
+
+# Jupyter
+.ipynb_checkpoints/

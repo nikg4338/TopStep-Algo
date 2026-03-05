@@ -1,0 +1,929 @@
+PRODUCT REQUIREMENTS DOCUMENT
+
+Algorithmic Futures
+
+Topstep Trading Challenge System
+
+  ---------------------------- ------------------------------------------
+  Document Version             1.0
+
+  Status                       Draft — Pending Engineering Review
+
+  Date                         February 2026
+
+  Author                       Algorithmic Futures — Strategy Team
+
+  Platform                     TopstepX via ProjectX API
+
+  Language                     Python 3.11+
+
+  Instrument                   MES (Micro E-mini S&P 500)
+  ---------------------------- ------------------------------------------
+
+1. Executive Summary
+
+Algorithmic Futures is a Python-based algorithmic trading system
+engineered to pass the Topstep $50,000 Trading Combine. The system
+deploys a regime-switched execution architecture: a Hidden Markov Model
+(HMM) classifier determines the prevailing market state each evening,
+and the appropriate strategy fires automatically the following session.
+
+The core design philosophy treats the challenge as a constrained
+survival problem, not a return-maximization contest. Every system
+decision flows from a single constraint: reach a $3,000 profit target
+without breaching a $2,000 Maximum Loss Limit (MLL).
+
+  -----------------------------------------------------------------------
+  Metric                 Value
+  ---------------------- ------------------------------------------------
+  Primary Goal           Pass Topstep $50K Trading Combine
+
+  Secondary Goal         Transition to funded account and generate
+                         consistent payouts
+
+  True Risk Capital      $2,000 (MLL)
+
+  Profit Target          $3,000
+
+  Execution Platform     TopstepX via ProjectX API (~$14.50/month)
+
+  Instrument             MES (Micro E-mini S&P 500) — never full ES
+
+  Risk Per Trade         $20–$40 (1–2% of MLL)
+
+  Strategy A             VWAP Mean Reversion (low-volatility regime)
+
+  Strategy B             15-Minute Opening Range Breakout (trending
+                         regime)
+
+  Regime Classifier      3-state Gaussian HMM with nightly walk-forward
+                         refit
+
+  Validation Method      Monte Carlo simulation — 10,000 trade-path runs
+  -----------------------------------------------------------------------
+
+2. Problem Statement
+
+2.1 The Challenge
+
+Proprietary trading firms like Topstep operate a B-book model during
+evaluations: the firm acts as direct counterparty to trades. Between
+70–90% of retail traders fail evaluations, not due to a lack of
+directional insight, but due to poor risk management, emotional trading,
+and position sizing that is incompatible with strict drawdown
+constraints.
+
+The Topstep $50,000 combine imposes three simultaneous constraints that
+most retail strategies cannot satisfy:
+
+-   Drawdown ceiling: Never lose more than $2,000 (the MLL) at any point
+    — account is terminated if breached
+
+-   Profit target: Must reach $3,000 profit before timing out — forcing
+    enough trading activity to create exposure
+
+-   Consistency rule: No single trading day can account for more than
+    50% of cumulative profit (40% for Express Funded payouts)
+
+2.2 Why Existing Approaches Fail
+
+  ------------------------------------------------------------------------
+  Failure Mode       Root Cause                  Impact
+  ------------------ --------------------------- -------------------------
+  Over-leveraging    Nominal $50K account        Single 10-point ES
+  with full ES       creates illusion of $50K    rotation = $500 = 25% of
+  contracts          risk capital                true capital
+
+  Static             Mean reversion applied on   Catastrophic drawdowns
+  single-strategy    trending days (and vice     when market regime
+  execution          versa)                      mismatches strategy
+
+  Chronological      Ignores sequence risk;      Strategy that backtests
+  backtesting only   equity curve looks better   profitably still fails
+                     than live                   due to unlucky trade
+                                                 ordering
+
+  No daily circuit   Trader continues after      Single bad morning can
+  breakers           early losses hoping to      consume 100% of daily
+                     recover                     loss allowance
+
+  Violation of       Algorithm catches a large   Forces additional trades
+  Consistency Rule   trend day and over-profits  beyond original target to
+                                                 rebalance ratio
+  ------------------------------------------------------------------------
+
+3. Goals & Non-Goals
+
+3.1 Goals
+
+-   G1: Pass the Topstep $50,000 Trading Combine with a probability of
+    success > 60% per attempt (validated by Monte Carlo)
+
+-   G2: Never breach the $2,000 MLL under any sequence of trade outcomes
+    within validated parameters
+
+-   G3: Operate fully autonomously during RTH session (9:30 ET – 3:05 PM
+    CT) with zero manual intervention required
+
+-   G4: Enforce all Topstep consistency and daily loss rules
+    automatically via hardcoded circuit breakers
+
+-   G5: Adapt strategy selection daily based on quantitative regime
+    detection — never force a single strategy into incompatible
+    conditions
+
+-   G6: Complete the challenge in the minimum number of trading sessions
+    to reduce subscription fee exposure
+
+3.2 Non-Goals
+
+-   NOT a goal: Maximize absolute return — survival and drawdown control
+    take precedence over profit maximization
+
+-   NOT a goal: Trade multiple instruments — the system exclusively
+    trades MES, no NQ, YM, or other futures
+
+-   NOT a goal: Operate overnight or in extended hours — all positions
+    are closed by 3:05 PM CT each session
+
+-   NOT a goal: Support manual discretionary overrides — the algorithm
+    is fully systematic with no human intervention during trading hours
+
+-   NOT a goal: Build a general-purpose trading platform — this system
+    is purpose-built for the Topstep $50K combine constraints
+
+-   NOT a goal: Predict market direction — the system exploits
+    statistical tendencies, not directional forecasts
+
+4. User Personas & Stakeholders
+
+  ------------------------------------------------------------------------
+  Persona       Role             Primary Need          Success Criteria
+  ------------- ---------------- --------------------- -------------------
+  Challenge     Runs the system  Reliable autonomous   Challenge passed;
+  Operator      during the live  execution with no     funded account
+                combine attempt  manual decisions      achieved
+
+  Developer     Builds, tests,   Clear spec, testable  All modules pass
+                and maintains    modules, minimal      unit tests; 10+
+                the codebase     external dependencies paper sessions
+                                                       clean
+
+  Risk Monitor  Monitors live    Real-time log output; No MLL breach; all
+                sessions for     clear circuit breaker halts logged and
+                anomalies        alerts                explainable
+
+  Topstep       Validates        Clean trade history;  No consistency
+  Evaluator     compliance with  no rule violations    violations; no
+                combine rules                          daily limit
+                                                       breaches
+  ------------------------------------------------------------------------
+
+5. Functional Requirements
+
+Requirements are categorized by priority: P0 = critical (system cannot
+function without), P1 = important (significant degradation without), P2
+= enhancement.
+
+5.1 Risk & Position Management
+
+  --------------------------------------------------------------------------------
+  ID      Requirement                          Priority   MoSCoW     Owner
+  ------- ------------------------------------ ---------- ---------- -------------
+  RM-01   System MUST use fixed fractional     P0         Must Have  Risk Module
+          position sizing: $20–$40 risk per                          
+          trade, MES contracts only                                  
+
+  RM-02   System MUST halt all trading when    P0         Must Have  Circuit
+          realized daily P&L reaches -$240                           Breakers
+          (internal daily loss limit)                                
+
+  RM-03   System MUST halt all trading when    P0         Must Have  Circuit
+          realized daily P&L reaches +$1,200                         Breakers
+          (consistency protection)                                   
+
+  RM-04   System MUST flatten all open         P0         Must Have  Session
+          positions by 3:05 PM CT every                              Manager
+          session without exception                                  
+
+  RM-05   System MUST never allow account      P0         Must Have  Risk Module
+          equity to drop within $400 of MLL                          
+          without reducing risk to minimum                           
+
+  RM-06   System MUST enforce Topstep's 50%    P0         Must Have  Circuit
+          Combine Consistency Rule via daily                         Breakers
+          profit cap calculation                                     
+
+  RM-07   System MUST enforce Topstep's 40%    P1         Must Have  Circuit
+          Express Funded Consistency Rule for                        Breakers
+          payout sessions                                            
+
+  RM-08   System MUST persist daily P&L,       P0         Must Have  Session
+          cumulative P&L, and trade count to                         Manager
+          disk after each trade                                      
+
+  RM-09   System SHOULD alert operator via     P1         Should     Circuit
+          console/log when any circuit breaker            Have       Breakers
+          triggers                                                   
+
+  RM-10   System MAY send email/SMS alert on   P2         Could Have Circuit
+          circuit breaker trigger if operator                        Breakers
+          configures credentials                                     
+  --------------------------------------------------------------------------------
+
+5.2 HMM Regime Classifier
+
+  --------------------------------------------------------------------------------
+  ID       Requirement                         Priority   MoSCoW     Owner
+  -------- ----------------------------------- ---------- ---------- -------------
+  HMM-01   System MUST classify market into 3  P0         Must Have  Regime Module
+           states: State 0 (Balanced), State 1                       
+           (Directional), State 2 (Crisis)                           
+
+  HMM-02   HMM MUST use walk-forward           P0         Must Have  Regime Module
+           expanding-window validation — never                       
+           fit on future data                                        
+
+  HMM-03   HMM MUST use minimum 504 daily bars P0         Must Have  Regime Module
+           (~2 years) as training lookback                           
+
+  HMM-04   HMM feature inputs MUST include:    P0         Must Have  Regime Module
+           daily log return, ATR percentile                          
+           (252-day), VIX term structure slope                       
+
+  HMM-05   HMM MUST refit automatically at     P0         Must Have  Session
+           17:30 CT after each session close                         Manager
+
+  HMM-06   HMM state-to-regime mapping MUST    P0         Must Have  Regime Module
+           sort by realized volatility to                            
+           ensure economic consistency across                        
+           refits                                                    
+
+  HMM-07   Regime output for day t+1 MUST be   P0         Must Have  Regime Module
+           saved to persistent state file                            
+           before market open                                        
+
+  HMM-08   System SHOULD log HMM transition    P1         Should     Regime Module
+           probabilities and state confidence             Have       
+           score per session                                         
+
+  HMM-09   System MAY implement a secondary    P2         Could Have Regime Module
+           VIX spike detector to override to                         
+           State 2 if VIX moves > 20% intraday                       
+  --------------------------------------------------------------------------------
+
+5.3 Strategy A — VWAP Mean Reversion
+
+  --------------------------------------------------------------------------------
+  ID      Requirement                          Priority   MoSCoW     Owner
+  ------- ------------------------------------ ---------- ---------- -------------
+  VA-01   Strategy A MUST only activate when   P0         Must Have  Strategy
+          HMM outputs State 0                                        Engine
+
+  VA-02   VWAP MUST be anchored to RTH open    P0         Must Have  Indicators
+          (9:30 ET) and recalculated on every                        
+          new bar                                                    
+
+  VA-03   Standard deviation bands MUST be     P0         Must Have  Indicators
+          projected at ±2.5σ and ±3.0σ from                          
+          the VWAP anchor                                            
+
+  VA-04   Entry MUST only be armed when price  P0         Must Have  Strategy
+          reaches the ±2.5σ to ±3.0σ zone — no                       Engine
+          entries inside ±2.5σ                                       
+
+  VA-05   Entry MUST be confirmed by CVD       P0         Must Have  Indicators
+          divergence at the SD extreme before                        
+          execution                                                  
+
+  VA-06   Profit target MUST be the VWAP       P0         Must Have  Strategy
+          baseline (not a fixed tick count)                          Engine
+
+  VA-07   Stop loss MUST be placed 1.5× the    P0         Must Have  Strategy
+          5-minute ATR beyond the entry                              Engine
+          extreme                                                    
+
+  VA-08   Strategy A MUST cap at a maximum of  P0         Must Have  Strategy
+          3 trade attempts per session                               Engine
+
+  VA-09   Strategy A MUST not enter positions  P1         Must Have  Strategy
+          within 15 minutes of the 3:05 PM CT                        Engine
+          close deadline                                             
+
+  VA-10   System SHOULD log the SD band level, P1         Should     Strategy
+          CVD value, and ATR at time of each              Have       Engine
+          entry signal                                               
+  --------------------------------------------------------------------------------
+
+5.4 Strategy B — 15-Minute ORB Breakout
+
+  --------------------------------------------------------------------------------
+  ID      Requirement                          Priority   MoSCoW     Owner
+  ------- ------------------------------------ ---------- ---------- -------------
+  VB-01   Strategy B MUST only activate when   P0         Must Have  Strategy
+          HMM outputs State 1                                        Engine
+
+  VB-02   Opening Range MUST be defined as the P0         Must Have  Strategy
+          absolute high and low of 9:30–9:45                         Engine
+          ET (first 15 minutes)                                      
+
+  VB-03   Breakout entry MUST require a full   P0         Must Have  Strategy
+          5-minute candle close outside the                          Engine
+          ORB boundary — wick breach alone is                        
+          invalid                                                    
+
+  VB-04   Stop loss MUST be placed at the ORB  P0         Must Have  Strategy
+          midline or the opposite boundary of                        Engine
+          the range                                                  
+
+  VB-05   Profit target MUST be set at minimum P0         Must Have  Strategy
+          1:1.5 risk-to-reward ratio from                            Engine
+          entry                                                      
+
+  VB-06   Strategy B MUST cap at a maximum of  P0         Must Have  Strategy
+          2 trade attempts per session                               Engine
+
+  VB-07   System MUST reject ORB signals       P1         Must Have  Strategy
+          generated after 11:00 ET (stale                            Engine
+          opening range)                                             
+
+  VB-08   System SHOULD log the ORB high, ORB  P1         Should     Strategy
+          low, breakout direction, and entry              Have       Engine
+          price for each attempt                                     
+  --------------------------------------------------------------------------------
+
+5.5 Order Execution & API
+
+  --------------------------------------------------------------------------------
+  ID      Requirement                          Priority   MoSCoW     Owner
+  ------- ------------------------------------ ---------- ---------- -------------
+  OE-01   All order routing MUST go through    P0         Must Have  API Client
+          the ProjectX API — no other                                
+          execution path permitted                                   
+
+  OE-02   API client MUST handle OAuth token   P0         Must Have  API Client
+          refresh automatically before expiry                        
+
+  OE-03   System MUST confirm trade fill via   P0         Must Have  Order Manager
+          WebSocket before placing exit orders                       
+
+  OE-04   System MUST cancel unconfirmed       P0         Must Have  Order Manager
+          orders after 30 seconds with no fill                       
+          confirmation                                               
+
+  OE-05   System MUST never place a new entry  P0         Must Have  Order Manager
+          order if an existing position is                           
+          open in the same instrument                                
+
+  OE-06   System MUST implement exponential    P1         Must Have  API Client
+          backoff (max 3 retries) for HTTP 429                       
+          and 503 API errors                                         
+
+  OE-07   System MUST log full order payload   P0         Must Have  Order Manager
+          and response for every order                               
+          placement attempt                                          
+
+  OE-08   System SHOULD implement OCO          P1         Should     Order Manager
+          (one-cancels-other) orders for                  Have       
+          stop + target if supported by                              
+          ProjectX API                                               
+
+  OE-09   System MUST gracefully flatten all   P1         Must Have  API Client
+          positions if WebSocket connection is                       
+          lost for > 60 seconds                                      
+  --------------------------------------------------------------------------------
+
+5.6 Monte Carlo Validation
+
+  --------------------------------------------------------------------------------
+  ID      Requirement                          Priority   MoSCoW     Owner
+  ------- ------------------------------------ ---------- ---------- -------------
+  MC-01   Monte Carlo engine MUST run minimum  P0         Must Have  Risk Module
+          10,000 simulations per parameter set                       
+          validation                                                 
+
+  MC-02   MC engine MUST report: ruin          P0         Must Have  Risk Module
+          probability, target probability,                           
+          95th pct max drawdown, 95th pct                            
+          losing streak                                              
+
+  MC-03   Parameter set MUST be rejected for   P0         Must Have  Risk Module
+          live use if ruin probability exceeds                       
+          15%                                                        
+
+  MC-04   Parameter set MUST be rejected if    P0         Must Have  Risk Module
+          95th percentile max drawdown exceeds                       
+          $1,200                                                     
+
+  MC-05   MC engine MUST be run before any     P0         Must Have  Risk Module
+          change to RISK_PER_TRADE, strategy                         
+          win rate assumptions, or R:R ratio                         
+
+  MC-06   System SHOULD store MC validation    P1         Should     Risk Module
+          results alongside each parameter                Have       
+          version in a validation log                                
+  --------------------------------------------------------------------------------
+
+6. Non-Functional Requirements
+
+6.1 Performance
+
+  ------------------------------------------------------------------------
+  Requirement              Target                Measurement Method
+  ------------------------ --------------------- -------------------------
+  Order placement latency  < 500ms from signal   Timestamp log between
+                           generation to API     signal and
+                           call dispatch         requests.post() call
+
+  WebSocket data           < 50ms per bar        Python
+  processing               calculation cycle     time.perf_counter()
+                           (VWAP, CVD, ATR)      profiling
+
+  HMM nightly refit        < 5 minutes for       APScheduler job duration
+  duration                 504-bar expanding     log
+                           window                
+
+  Monte Carlo 10,000 runs  < 30 seconds on       numpy vectorized
+                           standard developer    implementation required
+                           hardware              
+
+  State file write latency < 10ms per trade      File I/O benchmark
+                           update to JSON        
+                           persistence file      
+  ------------------------------------------------------------------------
+
+6.2 Reliability
+
+-   REL-01: System must recover from Python process restart without
+    losing daily P&L state or open position awareness
+
+-   REL-02: All circuit breakers must fire correctly after process
+    restart by reloading state from persistence file
+
+-   REL-03: System must never place a duplicate order — check open
+    orders before each new order placement
+
+-   REL-04: WebSocket disconnection must trigger an automatic reconnect
+    attempt within 5 seconds
+
+-   REL-05: If reconnect fails after 60 seconds with an open position,
+    system must flatten via REST API fallback
+
+6.3 Security
+
+-   SEC-01: All credentials stored in .env file — never hardcoded in
+    source files
+
+-   SEC-02: .env file must be in .gitignore — enforced via pre-commit
+    hook if using version control
+
+-   SEC-03: API keys must not appear in log files — mask all sensitive
+    values before logging
+
+-   SEC-04: Token refresh logic must not log raw bearer tokens
+
+6.4 Observability & Logging
+
+-   OBS-01: Every trade must be logged: timestamp, regime state,
+    strategy, entry price, stop, target, fill price, P&L, exit reason
+
+-   OBS-02: Every circuit breaker trigger must be logged with:
+    timestamp, breaker type, trigger value, threshold value
+
+-   OBS-03: Daily session summary must be written to logs/ at EOD: total
+    trades, win/loss, net P&L, cumulative P&L, regime used
+
+-   OBS-04: HMM refit must log: training window dates, state means,
+    transition matrix, predicted regime for next session
+
+-   OBS-05: Logs must be human-readable CSV or JSON — no binary formats
+
+7. System Architecture
+
+7.1 Module Dependency Map
+
+The five modules interact in a strict dependency hierarchy. Lower
+modules have no knowledge of higher-level modules:
+
+  -----------------------------------------------------------------------------------
+  Layer             Module                Depends On          Called By
+  ----------------- --------------------- ------------------- -----------------------
+  Layer 1           config.py             Nothing             All modules
+  (Foundation)                                                
+
+  Layer 1           monte_carlo.py        config, numpy       Developer validation
+  (Foundation)                                                only
+
+  Layer 2 (Data)    api_client.py         config, requests,   order_manager,
+                                          websockets          market_data
+
+  Layer 2 (Data)    market_data.py        api_client,         strategy_engine
+                                          indicators          
+
+  Layer 2 (Data)    indicators.py         numpy, pandas       market_data,
+                                                              strategy_engine
+
+  Layer 3           hmm_classifier.py     hmmlearn,           session_manager
+  (Intelligence)                          market_data, config 
+
+  Layer 3           position_sizer.py     config              order_manager
+  (Intelligence)                                              
+
+  Layer 4           circuit_breakers.py   config, session     order_manager
+  (Execution)                             state               
+
+  Layer 4           order_manager.py      api_client,         strategy_engine
+  (Execution)                             circuit_breakers,   
+                                          sizer               
+
+  Layer 5           vwap_mean_reversion   market_data,        session_manager
+  (Strategy)                              indicators,         
+                                          order_manager       
+
+  Layer 5           orb_breakout          market_data,        session_manager
+  (Strategy)                              indicators,         
+                                          order_manager       
+
+  Layer 6           session_manager.py    All modules,        main.py only
+  (Orchestration)                         apscheduler         
+  -----------------------------------------------------------------------------------
+
+7.2 Data Flow: Nightly Refit
+
+1.  APScheduler triggers nightly refit job at 17:30 CT
+
+2.  session_manager.py calls yfinance (or equivalent) to fetch latest
+    daily OHLCV + VIX/VIX3M bar
+
+3.  indicators.py computes: log_return, atr_percentile (252-day rank),
+    vix_term_slope
+
+4.  hmm_classifier.py appends new feature row to expanding training
+    window
+
+5.  GaussianHMM.fit() runs on updated window (max HMM_LOOKBACK_DAYS
+    bars)
+
+6.  _map_states_to_regimes() re-sorts state labels by volatility to
+    ensure consistency
+
+7.  Predicted regime for t+1 written to state.json persistence file
+
+8.  HMM diagnostics logged: transition matrix, state means, predicted
+    regime label
+
+7.3 Data Flow: Live Trading Session
+
+9.  Pre-market init (08:30 CT): load regime from state.json; connect
+    WebSocket; verify circuit breaker state
+
+10. RTH open (09:30 ET): session_manager activates appropriate strategy
+    module based on regime
+
+11. market_data.py receives real-time tick stream via WebSocket callback
+
+12. indicators.py updates VWAP, SD bands, CVD, and ATR on every new bar
+    close
+
+13. Strategy module evaluates entry conditions on each bar (every 5
+    minutes)
+
+14. If entry signal: order_manager.py calls circuit_breakers.check_all()
+    — abort if any breaker active
+
+15. position_sizer.py returns MES contract quantity (1 in most cases at
+    $20-40 risk)
+
+16. api_client.py dispatches order to ProjectX; awaits fill confirmation
+    via WebSocket
+
+17. On fill: exit orders placed; daily_pnl and trade_count updated;
+    trade logged
+
+18. At 3:05 PM CT: session_manager forces close_all_positions() via
+    api_client; session summary logged
+
+8. Acceptance Criteria
+
+8.1 Unit Test Acceptance
+
+  -----------------------------------------------------------------------
+  Component        Acceptance Test              Pass Condition
+  ---------------- ---------------------------- -------------------------
+  Monte Carlo      Run with 100% loss rate      Reports ruin_probability
+  Engine                                        = 1.0
+
+  Monte Carlo      Run with 100% win rate       Reports
+  Engine                                        target_probability = 1.0
+
+  Monte Carlo      Target parameters (55% WR,   Ruin probability < 15%,
+  Engine           $30/$22 avg)                 drawdown p95 < $1,200
+
+  Daily Loss       Simulate -$240 in P&L via 6  All subsequent order
+  Breaker          consecutive $40 losses       calls return rejected =
+                                                True
+
+  Daily Profit     Simulate +$1,200 P&L         All subsequent order
+  Halt                                          calls return rejected =
+                                                True
+
+  EOD Close        Set system clock to 3:05 PM  Position flattened; no
+                   CT with open position        new orders accepted
+
+  Circuit Breaker  Trigger breaker; advance     Breaker state resets;
+  Reset            clock to next session open   trading resumes
+
+  VWAP Calculator  Feed 20 known OHLCV bars     VWAP matches manually
+                                                computed value to 4
+                                                decimal places
+
+  CVD Divergence   Feed synthetic bullish       Returns 'BULLISH'; no
+                   divergence tick sequence     false positive on neutral
+                                                sequence
+
+  HMM Walk-Forward Inspect model.predict()      Zero data points from
+                   inputs                       date ≥ prediction target
+                                                date
+
+  ORB Breakout     Feed wick-only breach of ORB No entry signal generated
+                   boundary (no candle close)   
+
+  Position Sizer   Request sizing for $20 risk  Returns 2 MES contracts;
+                   with 8-tick stop (= $10)     never returns 0
+  -----------------------------------------------------------------------
+
+8.2 Integration Acceptance
+
+  ------------------------------------------------------------------------
+  Scenario        Steps                        Pass Condition
+  --------------- ---------------------------- ---------------------------
+  Full State 0    Force regime=0; feed ranging VWAP entries fire at ±2.5σ
+  day simulation  market data for 6 hours      with CVD confirmation only;
+                                               max 3 trades; EOD close at
+                                               3:05 PM CT
+
+  Full State 1    Force regime=1; feed         ORB range defined
+  day simulation  trending market data         9:30–9:45; breakout entry
+                                               on first close outside
+                                               range; max 2 attempts
+
+  State 2 crisis  Force regime=2               Zero orders placed; system
+  mode                                         logs 'Crisis regime —
+                                               trading halted'
+
+  Process restart Kill Python process;         Daily P&L, trade count, and
+  mid-session     restart; reload state.json   regime correctly restored;
+                                               no phantom orders placed
+
+  API timeout     Mock API to return timeout   System retries with
+  simulation      on first attempt             backoff; no duplicate order
+                                               placed on retry
+
+  Consistency     Simulate cumulative P&L =    Trading halts at $960 (40%
+  rule stress     $2,400; trigger +$1,000      of $2,400) — not at $1,200
+  test            single session               — due to consistency cap
+                                               override
+  ------------------------------------------------------------------------
+
+8.3 Paper Trading Acceptance
+
+  Gate for Live Deployment
+
+  The system must complete a minimum of 10 full paper-trading sessions
+  (via ProjectX simulation mode) before any live combine attempt.
+
+  ALL of the following must be true across all 10 sessions to proceed to
+  live:
+
+  • Zero MLL breaches
+
+  • Zero consistency rule violations
+
+  • Zero missed EOD closes (positions held past 3:05 PM CT)
+
+  • Zero duplicate orders placed
+
+  • All circuit breaker logs are present and match expected trigger
+  conditions
+
+  • Net simulated P&L is positive or within -$200 of breakeven
+
+9. Constraints & Assumptions
+
+9.1 Hard Constraints
+
+  ------------------------------------------------------------------------
+  Constraint            Value               Source
+  --------------------- ------------------- ------------------------------
+  Execution platform    TopstepX via        Topstep 2026 rule change
+                        ProjectX API only   (TopstepX mandatory)
+
+  Instrument            MES only — no ES,   Risk sizing — ES tick value
+                        NQ, YM, or others   10× larger than MES
+
+  Drawdown methodology  End-of-Day trailing Topstep rule — MLL trails from
+                        (not intraday)      EOD realized high
+
+  Consistency cap       No single day > 50% Topstep Combine rules
+  (Combine)             of total profit     
+
+  Consistency cap       No single day > 40% Topstep Express Funded payout
+  (Funded)              of total profit     rules
+
+  Daily external loss   $1,000              Topstep — account terminated
+  limit                                     if exceeded
+
+  Position close        3:05 PM CT          EOD settlement protection — no
+  deadline                                  overnight holds
+
+  API access cost       ~$14.50/month (50%  ProjectX API subscription
+                        trader discount)    
+  ------------------------------------------------------------------------
+
+9.2 Assumptions
+
+-   A1: ProjectX API provides real-time tick data with sufficient
+    granularity to compute CVD (bid/ask classification)
+
+-   A2: yfinance or equivalent free data source provides reliable daily
+    OHLCV and VIX/VIX3M data for HMM training
+
+-   A3: The 55% historical win rate and $30/$22 avg win/loss assumptions
+    for VWAP strategy are validated by backtesting before live use
+
+-   A4: Topstep rules as of February 2026 remain unchanged during the
+    challenge attempt — developer monitors for rule updates weekly
+
+-   A5: ProjectX API supports OCO orders or the system correctly manages
+    two separate exit orders (stop + target) via WebSocket monitoring
+
+-   A6: Developer has Python 3.11+ environment and pip access to all
+    required packages
+
+-   A7: System runs on hardware with stable internet connection during
+    RTH session — network interruptions are handled via reconnect logic
+
+10. Risks & Mitigations
+
+  ---------------------------------------------------------------------------------
+  Risk   Risk                  Likelihood   Impact   Mitigation
+  ID                                                 
+  ------ --------------------- ------------ -------- ------------------------------
+  R-01   CVD tick data         Medium       High     Implement order-flow proxy
+         unavailable via                             using price movement direction
+         ProjectX API                                as a CVD substitute; document
+                                                     accuracy degradation
+
+  R-02   HMM state labels flip Medium       High     Always sort states by ATR
+         between refits                              percentile mean after each
+                                                     refit; log transition matrix
+                                                     for human review
+
+  R-03   VWAP parameters       High         High     Lock all parameters before
+         overfitted to                               paper trading; prohibit
+         historical data                             in-sample optimization after
+                                                     paper phase begins
+
+  R-04   ProjectX API outage   Low          High     Exponential backoff + REST
+         during live session                         fallback; if outage > 60s with
+                                                     open position, alert operator
+                                                     immediately
+
+  R-05   Consistency rule      Medium       Medium   Daily profit halt at $1,200
+         violated on                                 fires before Combine 50% cap
+         unexpected trend day                        is reachable; test this
+                                                     scenario explicitly
+
+  R-06   Topstep changes rules Low          High     Monitor Topstep communications
+         mid-challenge                               weekly; re-validate circuit
+                                                     breakers if any threshold
+                                                     changes
+
+  R-07   Network interruption  Low          High     WebSocket reconnect within 5s;
+         leaves orphaned open                        REST fallback close if > 60s;
+         position                                    state file checked on
+                                                     reconnect
+
+  R-08   Python process crash  Low          High     State persisted to disk after
+         during active trade                         every trade; restart recovers
+                                                     state; ProjectX orders survive
+                                                     process death
+
+  R-09   Monte Carlo           Low          Medium   Start with conservative
+         acceptance criteria                         thresholds (15% ruin max);
+         set too loosely                             tighten if historical win rate
+                                                     is uncertain
+
+  R-10   MES liquidity         Low          Low      MES is among the most liquid
+         insufficient during                         futures — 1-contract entries
+         ORB breakout entry                          will not cause meaningful
+                                                     slippage
+  ---------------------------------------------------------------------------------
+
+11. Open Questions
+
+  ---------------------------------------------------------------------------
+  #       Question                           Owner       Target Resolution
+  ------- ---------------------------------- ----------- --------------------
+  OQ-01   Does ProjectX API provide          Developer   Phase 3 (API Layer)
+          tick-level bid/ask classification              
+          for CVD computation, or must we                
+          approximate?                                   
+
+  OQ-02   Does ProjectX API support native   Developer   Phase 3 (API Layer)
+          OCO orders, or must stop + target              
+          be managed as two separate working             
+          orders?                                        
+
+  OQ-03   Is a paper/simulation trading mode Developer   Pre-Phase 3
+          available through ProjectX before              
+          committing to a live Topstep                   
+          account?                                       
+
+  OQ-04   What is ProjectX's WebSocket       Developer   Phase 3 (API Layer)
+          heartbeat and reconnect behavior               
+          on market close / extended hours?              
+
+  OQ-05   Are existing Topstep combines      Operator    Before purchase
+          grandfathered onto                             
+          NinjaTrader/Rithmic, or is                     
+          TopstepX mandatory for all                     
+          accounts?                                      
+
+  OQ-06   Does the 40% Express Funded        Operator    Before live
+          Consistency Rule apply per payout              deployment
+          cycle or cumulatively across the               
+          funded account life?                           
+
+  OQ-07   What is the ProjectX API rate      Developer   Phase 3 (API Layer)
+          limit for order placement per                  
+          minute?                                        
+
+  OQ-08   Should the system target the $50K  Operator    Before purchase
+          combine or evaluate a smaller                  
+          account size for faster iteration?             
+  ---------------------------------------------------------------------------
+
+12. Glossary
+
+  -----------------------------------------------------------------------
+  Term            Definition
+  --------------- -------------------------------------------------------
+  ATR             Average True Range — a measure of realized volatility
+                  over N bars
+
+  B-book          Execution model where the broker/firm acts as direct
+                  counterparty to client trades
+
+  Circuit Breaker Automated trading halt triggered when a P&L threshold
+                  (loss or profit) is reached
+
+  CVD             Cumulative Volume Delta — running sum of (buy volume -
+                  sell volume); measures order flow pressure
+
+  EOD             End of Day — Topstep's drawdown trail method; MLL only
+                  trails from realized end-of-session highs
+
+  Gambler's Ruin  Statistical theorem describing the probability of going
+                  bankrupt with finite capital against infinite capital
+
+  HMM             Hidden Markov Model — probabilistic model that infers
+                  latent states from observable data
+
+  MAE             Maximum Adverse Excursion — the largest unrealized loss
+                  observed during an open trade
+
+  MES             Micro E-mini S&P 500 futures contract ($1.25/tick,
+                  1/10th the size of ES)
+
+  MFE             Maximum Favorable Excursion — the largest unrealized
+                  gain observed during an open trade
+
+  MLL             Maximum Loss Limit — Topstep's drawdown threshold; true
+                  operating capital of the account
+
+  Monte Carlo     Statistical simulation method that randomizes trade
+                  sequence to stress-test strategy survivability
+
+  ORB             Opening Range Breakout — a momentum strategy using the
+                  first N minutes of session as a range
+
+  RTH             Regular Trading Hours — 9:30 AM to 4:00 PM ET for US
+                  equity futures
+
+  VIX Term Slope  (VIX3M - VIX) / VIX — positive = contango (calm);
+                  negative = backwardation (stress)
+
+  VWAP            Volume-Weighted Average Price — dynamic equilibrium
+                  price weighted by actual volume traded
+
+  Walk-Forward    Validation technique where the model is only trained on
+                  historical data predating the prediction date
+  -----------------------------------------------------------------------
+
+This PRD is the authoritative specification for the Algorithmic Futures
+trading system. All implementation decisions must trace back to a
+requirement defined herein.
+
+Algorithmic Futures | Product Requirements Document v1.0 | February 2026
+| Confidential

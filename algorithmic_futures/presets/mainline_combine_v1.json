@@ -1,0 +1,112 @@
+{
+  "_meta": {
+    "name": "mainline_combine_v1",
+    "description": "Locked mainline policy stack for Topstep $50K Combine. Validated 2026-03-02 via 200-draw stratified MC calibration.",
+    "frozen_date": "2026-03-02",
+    "validation_artifact": "artifacts/validation_runs/v3_sizing_calibration_20260302_183607.json"
+  },
+
+  "account": {
+    "mode": "combine",
+    "nominal_account_size": 50000,
+    "max_loss_limit": 2000,
+    "profit_target": 3000,
+    "daily_loss_limit": 1000,
+    "consistency_cap": 0.50
+  },
+
+  "allocator": {
+    "policy": "ALLOC_V2_HYST",
+    "adx_trend_open_threshold": 25.0,
+    "adx_rising_min": 20.0,
+    "adx_rising_bars": 3,
+    "adx_range_max": 18.0,
+    "adx_range_bars": 3,
+    "early_adx_bars": 12,
+    "default_fallback": "mr"
+  },
+
+  "trend_engine": {
+    "strategy": "orb_pullback_v3",
+    "trigger_mode": "pullback_v3",
+    "orb_minutes": 15,
+    "pullback_v3_max_bars": 3,
+    "pullback_v3_tolerance_pts": 5.0,
+    "pullback_v3_entry_mode": "touch_only",
+    "orb_rr_ratio": 1.5,
+    "orb_stale_cutoff": "11:00",
+    "orb_trades_per_day": 2
+  },
+
+  "range_engine": {
+    "strategy": "mr_signal_engine",
+    "sigma_entry": 1.4,
+    "sigma_extreme": 2.5,
+    "reclaim_ticks": 0,
+    "cooldown_bars": 1,
+    "max_attempts_per_side": 4,
+    "exit_target_mode": "vwap",
+    "exit_stop_atr_mult": 1.5,
+    "thesis_break_enabled": true
+  },
+
+  "sizing": {
+    "policy": "dynamic_v3",
+    "variant": "orb_start",
+    "v3_earned_traction": 75.0,
+    "v3_giveback_floor": 25.0,
+    "v3_orb_upsize_allowed": true,
+    "v3_day_headroom_up": 800.0,
+    "v3_day_headroom_down": 600.0,
+    "v3_trail_headroom_up": 1400.0,
+    "v3_trail_headroom_down": 1200.0,
+    "profit_lock": 2000.0,
+    "daily_loss_limit": 1000.0,
+    "trail_dd_limit": 2000.0
+  },
+
+  "monte_carlo": {
+    "n_simulations": 10000,
+    "mode": "block",
+    "block_type": "session",
+    "max_days": 20,
+    "day_horizon_enabled": true,
+    "risk_per_trade": 20,
+    "seed": 42
+  },
+
+  "validation": {
+    "n_draws": 200,
+    "draw_size": 21,
+    "seed": 42,
+    "base_run_ids": [
+      "pb3eval_trend20_20260302_133325",
+      "pilot_20d_20260302_133625",
+      "pb3eval_random01_20260302_134030",
+      "pb3eval_random02_20260302_134339",
+      "pb3eval_random03_20260302_134658"
+    ]
+  },
+
+  "session_timing": {
+    "timezone": "US/Eastern",
+    "rth_open": "09:30",
+    "orb_end": "09:45",
+    "last_entry_cutoff": "15:50",
+    "eod_close": "16:05"
+  },
+
+  "validated_metrics": {
+    "_note": "200-draw stratified MC calibration, 2026-03-02",
+    "p_hit": 0.391,
+    "p_ruin": 0.0185,
+    "p_daily_breach": 0.000,
+    "eq_p50": 2216,
+    "eq_p10": 680,
+    "dd_p95": 1327,
+    "days_started_2c_mean": 7.0,
+    "days_ever_2c_mean": 10.1,
+    "trades_at_2c_mean": 25.4,
+    "orb_sessions_mean": 12.1
+  }
+}

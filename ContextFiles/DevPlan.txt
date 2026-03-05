@@ -1,0 +1,1229 @@
+ALGORITHMIC FUTURES
+
+Topstep Trading Challenge System
+
+DEVELOPER IMPLEMENTATION PLAN
+
+Version 1.0 | February 2026
+
++-----------------------------------------------------------------------+
+| System Overview                                                       |
+|                                                                       |
+| Regime-switched algorithmic trading system targeting the Topstep $50K |
+| Trading Combine.                                                      |
+|                                                                       |
+| Execution Platform: TopstepX via ProjectX API | Language: Python      |
+| 3.11+                                                                 |
+|                                                                       |
+| Instruments: MES (Micro E-mini S&P 500) | Strategies: VWAP Mean       |
+| Reversion + 15-Min ORB                                                |
++-----------------------------------------------------------------------+
+
+1. Project Overview & Objectives
+
+Purpose: This document provides a complete, context-ready implementation
+blueprint for a Python-based algorithmic trading system designed to pass
+the Topstep $50,000 Trading Combine. It is written for a developer with
+Python proficiency but who may not have prior financial markets or
+quantitative finance experience.
+
+Core Design Philosophy: The challenge is not a return-maximization
+problem — it is a constrained survival problem. The system must reach a
+$3,000 profit target without breaching a $2,000 Maximum Loss Limit
+(MLL). Every architectural decision flows from this constraint.
+
+1.1 Key Constraints (Non-Negotiable)
+
+  --------------------------------------------------------------------------
+  Constraint               Value           Developer Impact
+  ------------------------ --------------- ---------------------------------
+  Account Nominal Size     $50,000         Ignore this number entirely for
+                                           sizing logic
+
+  Maximum Loss Limit (True $2,000          This is the only capital figure
+  Capital)                                 the algorithm uses
+
+  Profit Target            $3,000          Upper absorbing boundary for
+                                           Gambler's Ruin model
+
+  Daily Loss Limit         $1,000          Hard external limit; internal
+  (Topstep)                                limit set tighter
+
+  Internal Daily Loss      $200–$240       Hardcoded halt — 5-6 normal
+  Breaker                                  losing trades
+
+  Daily Profit Halt        $1,000–$1,200   Prevents Consistency Rule
+                                           violation
+
+  Combine Consistency Rule No single day > Daily profit cap circuit breaker
+                           50% of total    required
+                           profit          
+
+  Instrument               MES (Micro      All execution uses MES, not ES
+                           E-mini S&P 500) 
+
+  Risk Per Trade           $20–$40 (1–2%   Fixed fractional sizing, never
+                           of MLL)         variable
+
+  Position Close Deadline  3:05 PM CT      Hard EOD liquidation — no
+                                           overnight holds
+
+  Execution Platform       TopstepX via    No NinjaTrader; Python API only
+                           ProjectX API    
+  --------------------------------------------------------------------------
+
+1.2 High-Level System Architecture
+
+The system consists of five loosely coupled Python modules that run in
+sequence each trading day:
+
+  ------------------------------------------------------------------------
+  Module             Description                     Runs When
+  ------------------ ------------------------------- ---------------------
+  1. HMM Regime      Identifies market state         After market close
+  Classifier         (Mean-Revert / Trend / Crisis)  each day
+                     for the next session            
+
+  2. Monte Carlo     Stress-tests trade parameters   During development &
+  Validator          against $2,000 MLL across       parameter changes
+                     10,000 simulations              
+
+  3. Strategy Engine Executes either VWAP Mean       Live during market
+                     Reversion or 15-Min ORB based   hours
+                     on regime signal                
+
+  4. Order Manager   Handles ProjectX API auth,      Live during market
+                     order routing, position         hours
+                     tracking, and circuit breakers  
+
+  5. Session Manager Enforces EOD close, daily P&L   Pre-market open + End
+                     tracking, logs results,         of day
+                     triggers nightly HMM refit      
+  ------------------------------------------------------------------------
+
+2. Development Environment Setup
+
+2.1 Required Stack
+
+  ----------------------------------------------------------------------------------------
+  Component                 Version / Package         Purpose
+  ------------------------- ------------------------- ------------------------------------
+  Python                    3.11+                     Core runtime
+
+  hmmlearn                  pip install hmmlearn      Hidden Markov Model regime
+                                                      classifier
+
+  numpy                     pip install numpy         Monte Carlo simulations, array math
+
+  pandas                    pip install pandas        Time series data handling
+
+  scipy                     pip install scipy         Statistical functions (ATR
+                                                      percentile, SD bands)
+
+  requests                  pip install requests      ProjectX REST API calls
+
+  websockets                pip install websockets    Real-time market data stream from
+                                                      ProjectX
+
+  apscheduler               pip install apscheduler   Session open/close scheduling
+
+  python-dotenv             pip install python-dotenv Secure API key management
+
+  pandas-market-calendars   pip install               Trading day detection
+                            pandas-market-calendars   
+
+  pytest                    pip install pytest        Unit testing all modules
+  ----------------------------------------------------------------------------------------
+
+2.2 ProjectX API Setup
+
+The ProjectX API ($29/month, 50% off for Topstep traders =
+~$14.50/month) is the only supported path for algorithmic execution on
+TopstepX. Set up as follows:
+
+1.  Register: Log into TopstepX, navigate to Settings > API Access, and
+    generate an API key.
+
+2.  Auth method: OAuth 2.0 bearer token. The token must be refreshed
+    periodically — build a token refresh wrapper from day one.
+
+3.  Base URL: Store as an environment variable, never hardcode in source
+    files.
+
+4.  Rate limits: Check the ProjectX documentation for current rate
+    limits. Build a request throttler as a shared utility to avoid 429
+    errors during live execution.
+
+5.  Paper trading: Confirm with ProjectX/Topstep whether a
+    paper/simulation mode is available before going live. All
+    development should occur in simulation mode first.
+
+  Critical Security Rule
+
+  Store ALL credentials in a .env file and load via python-dotenv. Never
+  commit API keys to source control.
+
+  Add .env to .gitignore immediately. Use environment variables for base
+  URLs as well.
+
+  Example .env: PROJECTX_API_KEY=xxx
+  PROJECTX_BASE_URL=https://api.projectx.com ACCOUNT_ID=yyy
+
+2.3 Recommended Project Structure
+
+  algorithmic_futures/
+
+  ├── .env # API keys (never commit)
+
+  ├── config.py # All constants and risk parameters
+
+  ├── main.py # Entry point — starts session manager
+
+  ├── session_manager.py # Daily lifecycle orchestration
+
+  ├── regime/
+
+  │ ├── hmm_classifier.py # HMM training, prediction, refit
+
+  │ └── regime_state.py # Enum: MEAN_REVERT, TREND, CRISIS
+
+  ├── strategies/
+
+  │ ├── vwap_mean_reversion.py # Strategy A logic
+
+  │ └── orb_breakout.py # Strategy B logic
+
+  ├── execution/
+
+  │ ├── order_manager.py # ProjectX API order routing
+
+  │ ├── api_client.py # REST + WebSocket client wrapper
+
+  │ └── circuit_breakers.py # Daily loss/profit halt logic
+
+  ├── risk/
+
+  │ ├── position_sizer.py # Fixed fractional MES sizing
+
+  │ └── monte_carlo.py # Drawdown simulation validator
+
+  ├── data/
+
+  │ ├── market_data.py # OHLCV + CVD feed handler
+
+  │ └── indicators.py # VWAP, ATR, SD bands, CVD
+
+  ├── logs/ # Daily trade logs (auto-generated)
+
+  └── tests/ # pytest test suite
+
+3. config.py — Central Parameters File
+
+All hardcoded risk parameters live in a single config.py file. This
+makes parameter adjustments safe and auditable. The developer should
+never scatter magic numbers through the codebase.
+
+  # config.py
+
+  # ── Account Constraints ──────────────────────────────
+
+  NOMINAL_ACCOUNT_SIZE = 50_000 # Ignore for all sizing decisions
+
+  MAX_LOSS_LIMIT = 2_000 # True capital; absorbing lower boundary
+
+  PROFIT_TARGET = 3_000 # Upper boundary for challenge completion
+
+  # ── Daily Circuit Breakers ───────────────────────────
+
+  DAILY_LOSS_LIMIT_EXTERNAL = 1_000 # Topstep's hard daily loss limit
+
+  DAILY_LOSS_LIMIT_INTERNAL = 240 # Our internal halt (5-6 normal
+  losses)
+
+  DAILY_PROFIT_HALT = 1_200 # Consistency rule protection cap
+
+  CONSISTENCY_PCT_CAP = 0.40 # Express funded: no day > 40% of total
+
+  # ── Position Sizing (Fixed Fractional) ───────────────
+
+  RISK_PER_TRADE_MIN = 20 # 1% of MLL
+
+  RISK_PER_TRADE_MAX = 40 # 2% of MLL
+
+  RISK_PER_TRADE = 20 # Start at minimum; never exceed max
+
+  # ── Instrument ───────────────────────────────────────
+
+  INSTRUMENT = 'MES' # Micro E-mini S&P 500 ONLY
+
+  TICK_SIZE = 0.25 # MES tick size in points
+
+  TICK_VALUE = 1.25 # USD per tick for MES
+
+  # ── Session Timing (all CT) ──────────────────────────
+
+  SESSION_OPEN = '08:30' # Pre-market data collection start
+
+  RTH_OPEN = '09:30' # Regular trading hours open (ET = CT+1)
+
+  ORB_END = '09:45' # End of 15-minute opening range
+
+  EOD_CLOSE = '15:05' # Hard position close deadline
+
+  NIGHTLY_REFIT_TIME = '17:30' # HMM refit after settlement
+
+  # ── VWAP Strategy (State 0) ──────────────────────────
+
+  VWAP_SD_ENTRY_MIN = 2.5 # Minimum SD band for entry
+
+  VWAP_SD_ENTRY_MAX = 3.0 # Maximum SD band for entry
+
+  VWAP_STOP_ATR_MULT = 1.5 # Stop = 1.5x 5-min ATR beyond entry
+
+  VWAP_TRADES_PER_DAY = 3 # Max VWAP trade attempts per session
+
+  # ── ORB Strategy (State 1) ───────────────────────────
+
+  ORB_MINUTES = 15 # Opening range window
+
+  ORB_RR_RATIO = 1.5 # Risk:reward target (1:1.5)
+
+  ORB_TRADES_PER_DAY = 2 # Max ORB trade attempts per session
+
+  # ── HMM Regime Classifier ────────────────────────────
+
+  HMM_N_STATES = 3 # 0=MeanRevert, 1=Trend, 2=Crisis
+
+  HMM_LOOKBACK_DAYS = 504 # ~2 years of daily bars for training
+
+  HMM_COVARIANCE_TYPE = 'full' # Covariance matrix type for GaussianHMM
+
+  HMM_N_ITER = 200 # EM algorithm iterations
+
+  # ── Monte Carlo ──────────────────────────────────────
+
+  MC_SIMULATIONS = 10_000 # Number of randomized trade-path runs
+
+  MC_MAX_TRADES = 200 # Max trades per simulation run
+
+4. Module 1: Monte Carlo Validator (Build First)
+
+Build this module before any live-execution code. It validates that the
+chosen risk parameters (win rate, risk:reward, position size) can
+survive the $2,000 MLL constraint with high probability. It has zero API
+dependencies and can run immediately.
+
+4.1 What It Does
+
+The Monte Carlo engine takes a distribution of historical or
+hypothetical trade results, randomizes the sequence 10,000 times, and
+measures how often the simulated account touches the $2,000 MLL before
+reaching the $3,000 profit target. This surfaces sequence risk that
+standard chronological backtesting cannot reveal.
+
+4.2 Required Inputs
+
+  ---------------------------------------------------------------------------
+  Input              Type          Description
+  ------------------ ------------- ------------------------------------------
+  win_rate           float         Historical or assumed win rate (e.g., 0.55
+                     (0.0–1.0)     for 55%)
+
+  avg_win            float (USD)   Average winning trade P&L in dollars
+                                   (e.g., $30)
+
+  avg_loss           float (USD)   Average losing trade P&L as negative value
+                                   (e.g., -$22)
+
+  starting_capital   float (USD)   Starting value = MAX_LOSS_LIMIT = $2,000
+
+  ruin_boundary      float (USD)   Lower boundary = 0 (account fully at MLL =
+                                   bust)
+
+  target_boundary    float (USD)   Upper boundary = PROFIT_TARGET = $3,000
+                                   above start
+
+  n_simulations      int           Number of Monte Carlo runs (minimum
+                                   10,000)
+
+  max_trades         int           Max trades per simulation before declaring
+                                   inconclusive
+  ---------------------------------------------------------------------------
+
+4.3 Implementation Logic
+
+  # risk/monte_carlo.py — simplified pseudocode
+
+  import numpy as np
+
+  from config import MAX_LOSS_LIMIT, PROFIT_TARGET, MC_SIMULATIONS,
+  MC_MAX_TRADES
+
+  def run_simulation(win_rate, avg_win, avg_loss, n_sim=MC_SIMULATIONS):
+
+  ruin_count = 0
+
+  target_count = 0
+
+  max_dd_list = []
+
+  longest_streak_list = []
+
+  for _ in range(n_sim):
+
+  capital = MAX_LOSS_LIMIT # $2,000 starting true capital
+
+  peak = capital
+
+  max_dd = 0
+
+  streak = 0
+
+  max_streak = 0
+
+  for _ in range(MC_MAX_TRADES):
+
+  outcome = avg_win if np.random.random() < win_rate else avg_loss
+
+  capital += outcome
+
+  # Track peak and drawdown
+
+  if capital > peak:
+
+  peak = capital
+
+  dd = peak - capital
+
+  if dd > max_dd:
+
+  max_dd = dd
+
+  # Track losing streaks
+
+  if outcome < 0:
+
+  streak += 1
+
+  max_streak = max(max_streak, streak)
+
+  else:
+
+  streak = 0
+
+  # Check boundary conditions
+
+  if capital <= 0: # Hit MLL (ruin)
+
+  ruin_count += 1
+
+  break
+
+  if capital >= MAX_LOSS_LIMIT + PROFIT_TARGET: # Hit target
+
+  target_count += 1
+
+  break
+
+  max_dd_list.append(max_dd)
+
+  longest_streak_list.append(max_streak)
+
+  return {
+
+  'ruin_probability': ruin_count / n_sim,
+
+  'target_probability': target_count / n_sim,
+
+  'max_drawdown_p95': np.percentile(max_dd_list, 95),
+
+  'max_losing_streak_p95': np.percentile(longest_streak_list, 95),
+
+  }
+
+4.4 Acceptance Criteria
+
+The parameter set is only valid for live deployment if ALL of the
+following thresholds are met:
+
+  ------------------------------------------------------------------------
+  Metric              Required Threshold Reject If
+  ------------------- ------------------ ---------------------------------
+  Ruin Probability    < 15%              > 15% of simulations hit the
+                                         $2,000 MLL
+
+  Target Probability  > 60%              Less than 60% of simulations
+                                         reach the $3,000 target
+
+  Max Drawdown (95th  < $1,200           95th percentile drawdown exceeds
+  pct)                                   60% of MLL
+
+  Max Losing Streak   < 8 consecutive    Streak would consume daily loss
+  (95th pct)          losses             breaker repeatedly
+  ------------------------------------------------------------------------
+
+  Developer Note: Run Monte Carlo First
+
+  Before writing a single line of strategy or API code, run the Monte
+  Carlo validator with your assumed win rate and R:R ratio.
+
+  If the parameters fail acceptance criteria, no amount of clever
+  strategy code will save the account.
+
+  The paper targets 55% win rate, $30 avg win, $22 avg loss on VWAP —
+  validate these numbers first.
+
+5. Module 2: HMM Regime Classifier
+
+The Hidden Markov Model determines which market regime is active for the
+following trading session. It runs each evening after market close,
+takes observable market data as input, and outputs one of three states
+that controls which strategy fires the next day.
+
+5.1 The Three States
+
+  ----------------------------------------------------------------------------
+  State   Label             Condition                Strategy Activated
+  ------- ----------------- ------------------------ -------------------------
+  State 0 Balanced /        Ranging, low ATR, VIX    Strategy A: VWAP Mean
+          Low-Volatility    term structure flat or   Reversion
+                            backwardated             
+
+  State 1 Directional /     Trending, elevated ATR,  Strategy B: 15-Min ORB
+          High-Volatility   VIX in contango          Breakout
+
+  State 2 Extreme Stress /  VIX spike, abnormal      No trading — cash
+          Crisis            realized vol, black swan preservation
+                            indicators               
+  ----------------------------------------------------------------------------
+
+5.2 Feature Inputs
+
+The HMM is trained on three observable daily features per bar. All
+features must be computable from data available before the next session
+opens (no lookahead):
+
+-   Daily Log Return: log(close_t / close_t-1). Captures directional
+      bias.
+
+-   Realized Volatility (ATR Percentile): The 14-day ATR expressed as a
+      percentile rank over the past 252 days. Values above 80th
+      percentile indicate a high-vol regime.
+
+-   VIX Term Structure Slope: (VIX3M - VIX) / VIX, where VIX3M is the
+      3-month VIX. A positive slope (contango) indicates calm; a
+      negative slope (backwardation) indicates stress or trending
+      regime.
+
+5.3 Critical: Walk-Forward Validation
+
+This is the most important implementation constraint for the HMM.
+Fitting the model on the full historical dataset simultaneously creates
+lookahead bias — the model will appear to predict regimes it actually
+learned from future data. This completely invalidates live performance.
+
+  Walk-Forward Implementation Rule
+
+  The HMM must ONLY be trained on data available up to day t to predict
+  the regime for day t+1.
+
+  Use an expanding window: start with 504 days of history
+  (HMM_LOOKBACK_DAYS), then add one day at a time.
+
+  Never use a sliding window — expanding window preserves the growing
+  information set as in live trading.
+
+  Refit runs autonomously at NIGHTLY_REFIT_TIME (17:30 CT) after each
+  session close.
+
+5.4 Implementation Outline
+
+  # regime/hmm_classifier.py — simplified pseudocode
+
+  from hmmlearn.hmm import GaussianHMM
+
+  import numpy as np
+
+  import pandas as pd
+
+  from config import HMM_N_STATES, HMM_LOOKBACK_DAYS,
+  HMM_COVARIANCE_TYPE, HMM_N_ITER
+
+  class RegimeClassifier:
+
+  def __init__(self):
+
+  self.model = None
+
+  self.state_map = {} # Maps HMM state int -> RegimeState enum
+
+  def fit(self, feature_df: pd.DataFrame):
+
+  '''
+
+  feature_df columns: ['log_return', 'atr_percentile', 'vix_term_slope']
+
+  Only pass data available up to and including yesterday.
+
+  '''
+
+  X = feature_df[['log_return', 'atr_percentile',
+  'vix_term_slope']].values
+
+  X = X[-HMM_LOOKBACK_DAYS:] # Use only the lookback window
+
+  self.model = GaussianHMM(
+
+  n_components=HMM_N_STATES,
+
+  covariance_type=HMM_COVARIANCE_TYPE,
+
+  n_iter=HMM_N_ITER
+
+  )
+
+  self.model.fit(X)
+
+  self._map_states_to_regimes(X)
+
+  def predict_next_regime(self, feature_df: pd.DataFrame) -> int:
+
+  '''Returns predicted state (0, 1, or 2) for the next session.'''
+
+  X = feature_df[['log_return', 'atr_percentile',
+  'vix_term_slope']].values
+
+  X = X[-HMM_LOOKBACK_DAYS:]
+
+  hidden_states = self.model.predict(X)
+
+  return int(self.state_map.get(hidden_states[-1], 0))
+
+  def _map_states_to_regimes(self, X):
+
+  '''
+
+  HMM states are arbitrarily numbered — must map to economic meaning.
+
+  Sort by mean realized volatility: lowest vol = State 0, highest =
+  State 2.
+
+  '''
+
+  means = self.model.means_
+
+  atr_col_idx = 1 # atr_percentile is second column
+
+  vol_order = np.argsort([m[atr_col_idx] for m in means])
+
+  self.state_map = {vol_order[0]: 0, vol_order[1]: 1, vol_order[2]: 2}
+
+5.5 Data Sourcing
+
+The HMM needs daily OHLCV data for ES/SPY and VIX/VIX3M. Recommended
+free sources for development:
+
+-   yfinance: pip install yfinance — Free daily bars for ^GSPC, ^VIX,
+      ^VIX3M. Sufficient for HMM training. Do not use for intraday
+      execution.
+
+-   ProjectX WebSocket: Use this for live intraday data during strategy
+      execution. The HMM refit can continue using yfinance for daily
+      closes.
+
+-   Quandl/FRED: Alternative sources for VIX term structure data if
+      yfinance coverage is insufficient.
+
+6. Module 3: Strategy Engine
+
+6.1 Strategy A — VWAP Mean Reversion (State 0)
+
+Activation condition: HMM outputs State 0 (balanced, low-volatility
+regime) for the session.
+
+VWAP (Volume-Weighted Average Price) is the institutional equilibrium
+price for the session. When price deviates significantly from VWAP,
+institutional algorithms tend to push it back. This strategy fades those
+extremes.
+
+6.1.1 Entry Logic
+
+6.  Compute VWAP and Standard Deviation Bands: Calculate anchored VWAP
+    and rolling SD bands from the Regular Trading Hours (RTH) open (9:30
+    ET). Compute ±2.5σ and ±3.0σ bands continuously every bar.
+
+7.  Entry Gate: The algorithm only arms itself when price reaches the
+    ±2.5σ to ±3.0σ band. Price touching inside 2.5σ does not qualify.
+
+8.  CVD Divergence Confirmation (mandatory): At the price extreme, check
+    Cumulative Volume Delta (CVD). If price makes a lower low but CVD
+    makes a higher low (bullish divergence at the lower band), the
+    institutional absorption signal is confirmed. If no divergence, no
+    trade.
+
+9.  Execution: Market order (or tight limit) in the mean-reversion
+    direction. Target is the VWAP centerline.
+
+6.1.2 Exit Logic
+
+-   Profit Target: VWAP baseline (the center band, not a fixed point
+      target)
+
+-   Stop Loss: 1.5 × 5-minute ATR beyond the entry extreme. If entered
+      at -2.5σ, stop is placed 1.5× ATR below -2.5σ.
+
+-   Time Stop: Any open position at 3:05 PM CT is closed regardless of
+      P&L.
+
+-   Daily trade cap: Maximum 3 VWAP trade attempts per session.
+
+6.1.3 CVD Implementation Detail
+
+CVD is the cumulative sum of (bid volume - ask volume) over the session.
+It requires tick-level data classified as bid-initiated or
+ask-initiated. This is the technically hardest indicator to implement:
+
+  # data/indicators.py — CVD pseudocode
+
+  class CVDCalculator:
+
+  def __init__(self):
+
+  self.cumulative_delta = 0.0
+
+  self.bar_deltas = [] # CVD value at end of each bar
+
+  def on_tick(self, price, size, side): # side: 'buy' or 'sell'
+
+  if side == 'buy':
+
+  self.cumulative_delta += size
+
+  else:
+
+  self.cumulative_delta -= size
+
+  def close_bar(self):
+
+  self.bar_deltas.append(self.cumulative_delta)
+
+  def detect_divergence(self, price_bars, lookback=3):
+
+  '''
+
+  Bearish divergence: price higher high + CVD lower high (at upper band)
+
+  Bullish divergence: price lower low + CVD higher low (at lower band)
+
+  '''
+
+  if len(price_bars) < lookback or len(self.bar_deltas) < lookback:
+
+  return None
+
+  price_recent = price_bars[-lookback:]
+
+  cvd_recent = self.bar_deltas[-lookback:]
+
+  price_dir = price_recent[-1] - price_recent[0]
+
+  cvd_dir = cvd_recent[-1] - cvd_recent[0]
+
+  if price_dir < 0 and cvd_dir > 0: return 'BULLISH'
+
+  if price_dir > 0 and cvd_dir < 0: return 'BEARISH'
+
+  return None
+
+6.2 Strategy B — 15-Minute Opening Range Breakout (State 1)
+
+Activation condition: HMM outputs State 1 (directional, high-volatility
+regime) for the session.
+
+6.2.1 Entry Logic
+
+10. Define the Opening Range: Record the absolute high and absolute low
+    of the first 15 minutes of the RTH session (9:30–9:45 ET). This is
+    the ORB range.
+
+11. Breakout Detection: Monitor for the first 5-minute candle that
+    closes completely outside the ORB boundary (above the high for a
+    long, below the low for a short). A close is required — not just a
+    wick breach.
+
+12. Entry: Enter market order in the direction of the breakout on the
+    candle close.
+
+6.2.2 Exit Logic
+
+-   Stop Loss: Placed at the midline of the ORB range (or the opposite
+      side of the range for wider ranges). This is a structural stop.
+
+-   Profit Target: 1:1.5 risk-to-reward. If stop distance is 10 ticks,
+      target is 15 ticks in the breakout direction.
+
+-   Daily trade cap: Maximum 2 ORB attempts per session. If both fail,
+      trading halts for the day.
+
+-   Time Stop: All positions closed at 3:05 PM CT.
+
+  ------------------------------------------------------------------------
+  Parameter          Value                 Rationale
+  ------------------ --------------------- -------------------------------
+  Opening Range      9:30–9:45 ET (15 min) Captures initial institutional
+  Window                                   order flow consensus
+
+  Breakout           Full candle close     Prevents false breakout entries
+  Confirmation       outside range         on wicks
+
+  Stop Location      ORB midline or        Structural stop; defines the
+                     opposite side         range invalidation point
+
+  Risk:Reward        1:1.5 minimum         Ensures positive expectancy
+                                           even at 40% win rate
+
+  Max Daily Trades   2                     Prevents chop-induced drawdown
+                                           on indecisive days
+  ------------------------------------------------------------------------
+
+7. Module 4: Order Manager & ProjectX API Client
+
+7.1 API Client Wrapper
+
+All communication with TopstepX goes through a single api_client.py
+wrapper. Never scatter raw requests.get() calls throughout the codebase.
+The wrapper handles authentication, token refresh, rate limiting, and
+error handling uniformly.
+
+  # execution/api_client.py — structure outline
+
+  class ProjectXClient:
+
+  def __init__(self, api_key: str, base_url: str, account_id: str):
+
+  self.api_key = api_key
+
+  self.base_url = base_url
+
+  self.account_id = account_id
+
+  self.token = None
+
+  self.token_expiry = None
+
+  def _refresh_token_if_needed(self):
+
+  # Re-authenticate if token is expired or within 5 minutes of expiry
+
+  ...
+
+  def get_account_balance(self) -> dict:
+
+  # GET /account/{account_id}/balance
+
+  # Returns: { 'balance': float, 'unrealized_pnl': float }
+
+  ...
+
+  def place_order(self, side: str, qty: int, order_type: str,
+
+  limit_price: float = None, stop_price: float = None) -> dict:
+
+  # POST /orders
+
+  # side: 'BUY' or 'SELL'
+
+  # order_type: 'MARKET', 'LIMIT', 'STOP'
+
+  # Returns: { 'order_id': str, 'status': str }
+
+  ...
+
+  def cancel_order(self, order_id: str) -> bool:
+
+  # DELETE /orders/{order_id}
+
+  ...
+
+  def get_positions(self) -> list:
+
+  # GET /positions
+
+  # Returns list of open positions
+
+  ...
+
+  def close_all_positions(self) -> bool:
+
+  # Used by EOD close logic
+
+  # Flatten all open MES positions via market orders
+
+  ...
+
+  def subscribe_market_data(self, symbol: str, callback) -> None:
+
+  # WebSocket subscription for real-time OHLCV + tick data
+
+  ...
+
+7.2 Circuit Breakers Module
+
+The circuit_breakers.py module is the most safety-critical component. It
+runs as a check before every single order placement. If any breaker is
+triggered, the order is rejected and trading halts for the remainder of
+the session.
+
+  ------------------------------------------------------------------------
+  Circuit Breaker    Trigger Condition        Action
+  ------------------ ------------------------ ----------------------------
+  Daily Loss Hard    Realized daily P&L ≤     Halt all trading; log event;
+  Stop               -$240                    alert
+
+  Topstep External   Realized daily P&L ≤     Emergency flatten all
+  Limit Guard        -$1,000                  positions; halt
+
+  Daily Profit Halt  Realized daily P&L ≥     Halt all trading; secure EOD
+                     +$1,200                  drawdown benchmark
+
+  Consistency Cap    Any single day ≥ 40% of  Halt trading for remainder
+  Check              total cumulative profit  of session
+
+  MLL Proximity      Account within $400 of   Reduce position size to
+  Warning            MLL                      minimum ($20 risk)
+
+  Trade Count Cap    Trades today ≥ max for   Reject order; log trade cap
+                     active strategy          hit
+
+  EOD Time Stop      Current time ≥ 3:05 PM   Close all positions; halt
+                     CT                       new orders
+
+  Crisis Regime Stop HMM State 2 detected     No trades permitted; cash
+                                              preservation mode
+  ------------------------------------------------------------------------
+
+7.3 Order Manager Flow
+
+Every trade execution follows this exact sequence with no exceptions:
+
+13. Pre-trade check: Call circuit_breakers.check_all() — reject
+    immediately if any breaker is active.
+
+14. Size calculation: Call position_sizer.calculate() — returns MES
+    contract quantity (almost always 1 contract given $20-40 risk per
+    trade).
+
+15. Order placement: Call api_client.place_order() with the sized
+    quantity.
+
+16. Confirm fill: Poll or receive WebSocket fill confirmation. If no
+    fill in 30 seconds, cancel and log.
+
+17. Set exit orders: Immediately place stop-loss and profit-target
+    orders as OCO (one-cancels-other) if supported, or manage manually
+    via WebSocket monitoring.
+
+18. Update P&L tracker: Increment daily_pnl and trade_count in the
+    session state object.
+
+19. Log trade: Write full trade record to logs/ with timestamp, regime
+    state, entry, exits, and P&L.
+
+8. Module 5: Session Manager
+
+The session_manager.py is the top-level orchestrator. It ties all
+modules together and manages the daily lifecycle using APScheduler for
+timed events.
+
+8.1 Daily Lifecycle
+
+  -------------------------------------------------------------------------
+  Time (CT)     Event              Action
+  ------------- ------------------ ----------------------------------------
+  17:30 (prior  Nightly HMM Refit  Fetch yesterday's OHLCV+VIX data; refit
+  eve)                             HMM; save tomorrow's regime state to
+                                   file
+
+  08:30         Pre-Market Init    Load regime state; initialize circuit
+                                   breakers; connect WebSocket; verify API
+                                   auth
+
+  09:30         RTH Open           Start VWAP calculation (Strategy A) or
+                                   arm ORB timer (Strategy B) per regime
+
+  09:30–09:45   ORB Window         If State 1: record every tick for
+                                   opening range definition; no entries
+                                   allowed yet
+
+  09:45         ORB Armed          If State 1: begin monitoring for first
+                                   breakout candle close
+
+  09:30–15:00   Active Trading     Execute signals; enforce circuit
+                                   breakers on every order attempt
+
+  15:05         EOD Hard Close     Flatten all open positions via market
+                                   orders; record EOD balance for Topstep
+                                   benchmark
+
+  15:10         Daily Log          Write session summary: regime, trades,
+                                   P&L, circuit breaker events, equity
+                                   curve point
+
+  17:30         HMM Refit          Repeat nightly cycle
+  -------------------------------------------------------------------------
+
+8.2 State Persistence
+
+The session manager must persist the following state across restarts
+(write to a JSON file after every update):
+
+-   cumulative_pnl: Total realized P&L since challenge start — needed
+      for consistency rule calculation
+
+-   daily_pnl: Today's realized P&L — reset to 0.0 at session open
+
+-   daily_trade_count: Number of trades today — compared against
+      strategy trade cap
+
+-   current_regime: HMM output for today (0, 1, or 2)
+
+-   account_high_water_mark: Highest realized balance achieved — used to
+      calculate MLL trailing threshold
+
+-   challenge_status: IN_PROGRESS, PASSED, or FAILED — once FAILED, all
+      trading must halt
+
+9. Testing Strategy
+
+9.1 Unit Tests (Build as You Go)
+
+  -----------------------------------------------------------------------
+  Component          Test Cases
+  ------------------ ----------------------------------------------------
+  Monte Carlo Engine Known-ruin scenario (lose every trade) → ruin
+                     probability = 100%; Known-win scenario → ruin
+                     probability ≈ 0%
+
+  Circuit Breakers   Each breaker triggers independently at exact
+                     threshold; orders rejected after trigger; resets
+                     correctly at next session open
+
+  Position Sizer     Returns correct MES contracts for $20, $30, $40 risk
+                     at various stop distances; never returns 0 or
+                     negative
+
+  VWAP Calculator    Matches manually computed VWAP for known OHLCV
+                     sequence; SD bands expand correctly with volume
+
+  CVD Divergence     Correctly identifies bullish divergence from
+                     synthetic tick sequence; returns None when no
+                     divergence present
+
+  HMM Classifier     Walk-forward prediction is never based on future
+                     data; state mapping is stable across refits; State 2
+                     detected on synthetic crisis data
+
+  API Client         Mock all HTTP calls; token refresh triggers
+                     correctly; order placement sends correct payload
+
+  EOD Close Logic    Positions always flattened before 3:05 PM CT even if
+                     circuit breaker was triggered earlier
+  -----------------------------------------------------------------------
+
+9.2 Integration Testing
+
+Before connecting to a live ProjectX account, run a complete
+paper-trading simulation locally:
+
+20. Replay mode: Feed recorded tick data from a recent trading session
+    through the full strategy engine and verify circuit breakers trigger
+    at correct P&L levels.
+
+21. Regime switching test: Force-set the regime to each state (0, 1, 2)
+    and verify the correct strategy activates or trading halts.
+
+22. EOD stress test: Simulate a trade still open at 3:04 PM CT and
+    verify it is forcibly closed at 3:05 PM CT.
+
+23. API error handling: Simulate HTTP 429, 503, and network timeout
+    errors and verify the system does not place duplicate orders or get
+    stuck.
+
+9.3 Pre-Live Checklist
+
+  Complete All Before Going Live
+
+  [ ] Monte Carlo passes all 4 acceptance criteria for your specific
+  trade parameters
+
+  [ ] HMM classifier walk-forward validated on at least 2 years of daily
+  data
+
+  [ ] All 8 circuit breakers unit tested and verified independently
+
+  [ ] Full day paper-traded in simulation mode without any manual
+  intervention
+
+  [ ] EOD close confirmed to flatten positions under all conditions
+
+  [ ] API authentication token refresh tested for multi-hour sessions
+
+  [ ] State persistence file survives unexpected Python process restart
+
+  [ ] Consistency rule calculation verified against Topstep's actual
+  formula
+
+  [ ] Daily log output reviewed and confirmed human-readable for
+  post-session analysis
+
+10. Recommended Build Phases
+
+  ---------------------------------------------------------------------------
+  Phase         Duration   Deliverables                Done When
+  ------------- ---------- --------------------------- ----------------------
+  Phase 1:      3–5 days   config.py, Monte Carlo      MC passes all 4
+  Foundation               engine, unit tests for      acceptance criteria
+                           Monte Carlo                 with target params
+
+  Phase 2:      5–7 days   HMM classifier, feature     HMM correctly
+  Regime                   pipeline (log return, ATR   identifies crisis
+  Classifier               pct, VIX slope),            periods in historical
+                           walk-forward validator      data
+
+  Phase 3: API  3–5 days   ProjectX API client         Can receive live
+  Layer                    wrapper, auth/token         quotes and place a
+                           refresh, WebSocket market   test order in
+                           data stream                 simulation
+
+  Phase 4:      5–7 days   VWAP calculator, SD bands,  VWAP strategy
+  Strategy A               CVD calculator, divergence  backtested on 3+
+                           detector, Strategy A        months of intraday
+                           entry/exit logic            data
+
+  Phase 5:      3–4 days   ORB range builder, breakout ORB strategy
+  Strategy B               detector, Strategy B        backtested; trade cap
+                           entry/exit logic            and time stop verified
+
+  Phase 6:      2–3 days   All 8 circuit breakers,     Every breaker triggers
+  Circuit                  daily P&L tracker, session  correctly under
+  Breakers                 state persistence           synthetic test
+                                                       conditions
+
+  Phase 7:      4–5 days   Session manager,            Full simulated trading
+  Integration              APScheduler setup, full     day runs without
+                           daily lifecycle, EOD close, manual intervention
+                           nightly refit               
+
+  Phase 8:      10–15 days Live paper trading on       10+ complete simulated
+  Paper Trading            simulation account via      sessions with no
+                           ProjectX API                circuit breaker
+                                                       failures
+
+  Phase 9: Live Ongoing    Live TopstepX combine       Challenge passed;
+  Challenge                execution                   funded account
+                                                       achieved
+  ---------------------------------------------------------------------------
+
+  Total Estimated Development Time
+
+  Experienced Python developer with no trading background: 6–9 weeks
+
+  Developer with prior algorithmic trading experience: 3–5 weeks
+
+  Do not compress Phase 8 (paper trading). 10 sessions minimum is not
+  optional.
+
+  Each challenge attempt costs money — paper trading time is far cheaper
+  than failed attempts.
+
+11. Known Risks & Mitigations
+
+  ---------------------------------------------------------------------------
+  Risk               Likelihood   Mitigation
+  ------------------ ------------ -------------------------------------------
+  CVD data           Medium       Use order flow proxy: classify trades by
+  unavailable via                 whether price moves up or down on each
+  ProjectX API                    fill. Less accurate but buildable from
+                                  OHLCV.
+
+  HMM state mapping  Medium       Always re-sort states by realized
+  is unstable across              volatility after each refit. Document any
+  refits                          sudden regime re-labeling.
+
+  ProjectX API       Low          Implement reconnect logic with exponential
+  outage during live              backoff. If connection lost for >60 seconds
+  session                         with open positions, alert developer
+                                  immediately.
+
+  Overfitting VWAP   High         Only optimize parameters during Phase 2
+  parameters to                   using out-of-sample data. Lock parameters
+  historical data                 before paper trading begins.
+
+  Consistency rule   Medium       Daily profit halt at $1,200 is the defense.
+  violation on a                  Verify the halt fires before the session's
+  strong trend day                P&L can reach the consistency cap.
+
+  MES tick data      Low-Medium   Timestamp every tick on receipt. If tick
+  latency causing                 gap > 2 seconds, flag the CVD calculation
+  CVD calculation                 as unreliable for that bar.
+  errors                          
+
+  Topstep rule       Low          Monitor Topstep communications weekly.
+  changes                         Re-validate circuit breaker thresholds if
+  mid-challenge                   any rule update occurs.
+  ---------------------------------------------------------------------------
+
+12. Quick Reference: Key Numbers
+
+  --------------------------------------------------------------------------
+  Parameter              Value            Source
+  ---------------------- ---------------- ----------------------------------
+  True Risk Capital      $2,000           Topstep MLL for $50K account
+
+  Profit Target          $3,000           Topstep $50K combine target
+
+  Risk Per Trade         $20 (start)      1% of $2,000 MLL —
+                                          config.RISK_PER_TRADE
+
+  Internal Daily Loss    $240             5-6 losing trades —
+  Halt                                    config.DAILY_LOSS_LIMIT_INTERNAL
+
+  Daily Profit Halt      $1,200           Consistency protection —
+                                          config.DAILY_PROFIT_HALT
+
+  EOD Position Close     3:05 PM CT       Hard deadline — config.EOD_CLOSE
+
+  VWAP Entry Band        ±2.5σ to ±3.0σ   From RTH open anchor —
+                                          config.VWAP_SD_ENTRY_MIN/MAX
+
+  VWAP Stop              1.5× 5-min ATR   Beyond entry extreme —
+                                          config.VWAP_STOP_ATR_MULT
+
+  ORB Window             9:30–9:45 ET     15-minute opening range —
+                                          config.ORB_MINUTES
+
+  ORB Target             1.5× stop        R:R ratio — config.ORB_RR_RATIO
+                         distance         
+
+  HMM States             0 = Range, 1 =   3-state Gaussian HMM
+                         Trend, 2 =       
+                         Crisis           
+
+  HMM Training Window    504 days (~2     Expanding window —
+                         years)           config.HMM_LOOKBACK_DAYS
+
+  Monte Carlo            10,000 runs      config.MC_SIMULATIONS
+  Simulations                             
+
+  MC Ruin Threshold      < 15%            Acceptance criteria for live
+                                          deployment
+
+  ProjectX API Cost      ~$14.50/month    50% Topstep trader discount
+                                          applied
+  --------------------------------------------------------------------------
+
+This document supersedes all prior strategy discussions. Build in phase
+order. Do not skip Monte Carlo validation.
+
+Algorithmic Futures | Topstep Challenge System | Developer
+Implementation Plan v1.0 | February 2026

@@ -1,0 +1,231 @@
+Project Summary — Topstep Combine Survival Engine
+Objective
+
+Design a statistically robust intraday futures system (MES) capable of passing a Topstep $50K Combine under:
+
+$2,000 trailing drawdown
+
+$1,000 daily loss limit
+
+Consistency rules
+
+Sequence risk / variance clustering
+
+Primary metric:
+
+Probability of hitting +$3,000 before ruin within 20 trading days.
+
+This is a survival optimization problem, not alpha maximization.
+
+Current Strategy Architecture
+Core Strategy: VWAP Mean Reversion (MR)
+
+Entry:
+
+Fade deviations from VWAP
+
+Sigma-based threshold (tested 1.3–2.2σ)
+
+Reclaim condition required
+
+Attempt limits per side
+
+Regime filter (range vs trend via ADX/ATR)
+
+Exit:
+
+VWAP target (primary)
+
+Hard stop
+
+Thesis-break MAE
+
+Time-stop (removed in later experiments)
+
+Runner/staged exits (tested, mostly failed)
+
+Monte Carlo:
+
+Block bootstrap by session
+
+Multi-batch CI gate
+
+Severe stress / mild stress / tilt stress scenarios
+
+Day-horizon limit (20 days)
+
+What Has Been Proven So Far
+1️⃣ Infrastructure is solid
+
+231+ tests passing
+
+Block bootstrap implemented
+
+CI-based promotion gate implemented
+
+Tilt stress implemented
+
+Diagnostics implemented
+
+Disk cache for Databento implemented
+
+20-day pilot pack running cleanly
+
+The system works technically.
+
+2️⃣ Exit engineering does NOT fix the problem
+
+Experiments:
+
+High sigma (2.2σ, 2.0σ): negative expectancy
+
+Runner mode (multiple variants): reduced expectancy
+
+50/50 split, 1.4R runner: expectancy 0.070R
+
+60/40 split, 2.0R runner: worse
+
+Removing time-stop improved results
+
+Best variant so far:
+
+Exp 2 (Best So Far)
+
+Sigma = 1.4
+
+No time-stop
+
+No runner
+
+Thesis-break + hard stop
+
+Trades/day ≈ 7.25
+
+Win rate ≈ 50%
+
+Avg win ≈ 0.86R
+
+Avg loss ≈ -0.69R
+
+Expectancy ≈ 0.0919R
+
+DD p95 ≈ 717
+
+This is currently the best edge configuration.
+
+3️⃣ Structural Discovery: The Right Tail is Thin
+
+Post-VWAP extension analysis showed:
+
+Beyond VWAP + 0.8R: 2.76%
+
+Beyond VWAP + 1.2R: 1.38%
+
+Beyond VWAP + 1.4R: 0.00%
+
+Conclusion:
+
+The MR distribution is capped near VWAP.
+Exit shaping cannot manufacture convexity.
+
+This ended the runner experiments.
+
+4️⃣ Monte Carlo Results (Pilot 20d)
+
+Even with the best configuration:
+
+Expectancy ~0.09R
+
+p_target over 20 days ≈ 0%
+
+Severe stress collapses system
+
+Combine target mathematically unreachable at current expectancy
+
+Core math problem:
+
+At ~0.09R expectancy and ~7 trades/day:
+Expected 20-day PnL ≈ $130–150
+Target = $3,000
+
+Edge is real but too thin.
+
+5️⃣ Entry-Quality Engineering Attempt (Path A)
+
+Tried stacking filters:
+
+Distance-to-VWAP in ATR units
+
+VWAP slope constraint
+
+Stronger reclaim confirmation
+
+Excursion dedupe
+
+Results:
+
+Trades/day collapsed to 1–2
+
+Expectancy negative
+
+Over-constrained
+
+Conclusion:
+
+Broad stacked filters destroyed frequency and edge.
+
+Next proposed move: targeted filter ablation (test one filter at a time).
+
+Current State
+
+We are at a fork:
+
+Option A — Targeted Filter Ablation
+
+Test single filters (loosened thresholds) one at a time to see if any increase expectancy above 0.10R without killing frequency.
+
+Option B — Add Second Engine
+
+Add ORB breakout/continuation strategy to supply convexity that MR lacks.
+
+Core Insight So Far
+
+Deeper sigma ≠ better
+
+Runners ≠ solution
+
+Time-stop was harmful
+
+Edge lives at moderate excursions (1.4σ)
+
+Distribution lacks fat right tail
+
+Expectancy ceiling around ~0.09R in current MR form
+
+Monte Carlo correctly identifies inability to reach $3k in 20 days
+
+Key Question Moving Forward
+
+Is this MR framework fundamentally capped at ~0.09R expectancy?
+
+Or can careful entry-quality refinement lift it above ~0.12R?
+
+If not, the strategy must be paired with a second convex engine.
+
+Continue from this context. So I just ran the 20 day abalation and here are the newest results: Ablation results (20-day pack)
+
+A0 control (no new filters): trades/day 2.79, win 41.5%, avg_r -0.0504
+A1 distance only (>=0.6 ATR): trades/day 2.42, win 39.1%, avg_r -0.0688
+A2 VWAP-flat only (<=0.45 ATR drift): trades/day 2.87, win 41.9%, avg_r -0.0740
+A3 reclaim-strength only: trades/day 2.59, win 36.4%, avg_r -0.1112
+Funnel evidence
+
+Candidate pool is only 56 in all variants; approved 55 in A0, 47 in A1, 45 in A2, 45 in A3.
+Top failures by variant:
+A1: DISTANCE_ATR (7)
+A2: VWAP_FLATNESS (9)
+A3: RECLAIM_STRENGTH (10)
+Key conclusion
+
+The three new filters are not the primary collapse driver; they remove only 7–10 candidates each.
+The dominant bottleneck is upstream: reclaim-only candidate formation itself (candidate pool 56 vs your historical much larger flow), which is why even A0 is far below Exp 2 frequency/edge. Next clean single-variable step should be reclaim-mode ablation (toggle reclaim requirement on/off) before Path B. Want me to implement that toggle and run the two-run comparison immediately?

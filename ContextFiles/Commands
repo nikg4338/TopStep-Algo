@@ -1,0 +1,21 @@
+Monte Carlo Live Chart:
+cd "/Users/nikghaderi/Desktop/TopStep Algo/algorithmic_futures" && "/Users/nikghaderi/Desktop/TopStep Algo/.venv/bin/python" visualize_live.py mc --simulations 10000 --chunk-size 250
+
+Replay Live Chart (90 min, full ticks):
+cd "/Users/nikghaderi/Desktop/TopStep Algo/algorithmic_futures" && "/Users/nikghaderi/Desktop/TopStep Algo/.venv/bin/python" visualize_live.py replay --start 2026-02-18T14:30:00Z --end 2026-02-18T16:00:00Z --update-every 500
+
+Replay short test (5 min, capped):
+cd "/Users/nikghaderi/Desktop/TopStep Algo/algorithmic_futures" && "/Users/nikghaderi/Desktop/TopStep Algo/.venv/bin/python" visualize_live.py replay --start 2026-02-18T14:30:00Z --end 2026-02-18T15:00:00Z --max-ticks 5000 --update-every 100
+
+# Debug replay with full cockpit
+python replay_debug.py --start 2025-02-18T14:30:00Z --end 2025-02-18T16:00:00Z
+
+# Quick smoke test (limited ticks)
+python replay_debug.py --start 2025-02-18T14:30:00Z --end 2025-02-18T15:00:00Z --max-ticks 5000 --session-id smoke
+
+# Headless with image save
+python replay_debug.py --start 2025-02-18T14:30:00Z --end 2025-02-18T16:00:00Z --no-show --save-path artifacts/debug.png
+
+# Tests
+python -m pytest tests/test_debug_cockpit.py -v
+python -m pytest tests/ -v  # full suite
