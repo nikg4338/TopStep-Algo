@@ -8,8 +8,12 @@ new open_proxy_v1 price-action allocator on three datasets:
   2. extended_60d   — 58 sessions (Dec 1 – Feb 20)
   3. trend20        — 20 ADX-upper-tertile sessions (trend days)
 
-For each (dataset × allocator) cell, performs post-hoc re-routing from existing
-base run features_snapshot.csv + trades.csv and runs MC survival simulation.
+For each (dataset × allocator) cell, performs post-hoc re-routing:
+  - V2_HYST: replicated from features_snapshot.csv non-zero ADX (calibration behavior)
+  - open_proxy_v1: builds 5-min bars from cached Databento tick parquet,
+    extracts OR (09:30–09:45 ET), computes proxy signals, runs decision
+
+Then runs MC survival simulation on the same trade PnL pool.
 
 Outputs:
   - Per-cell: routing counts, ORB entries, trades/day, avg_r, dd_p95,
@@ -40,6 +44,7 @@ from typing import Any
 
 import numpy as np
 import pandas as pd
+import pytz
 
 _PROJECT_ROOT = Path(__file__).resolve().parent
 if str(_PROJECT_ROOT) not in sys.path:
@@ -53,6 +58,9 @@ from validation.open_proxy_allocator import (
     OpenWindowState,
     decide as open_proxy_decide,
 )
+
+_ET = pytz.timezone(config.TIMEZONE)
+_TICK_CACHE = Path("data/cache/MES.c.0/trades")
 
 ARTIFACTS_ROOT = Path("artifacts/validation_runs")
 
@@ -272,31 +280,90 @@ def _allocator_v2_decision(session_dir: Path) -> AllocatorResult:
     )
 
 
+def _allocator_v2_live_decision(session_dir: Path) -> AllocatorResult:
+    """Replicate ALLOC_V2_HYST using REAL first-3-bars ADX (all zeros).
+
+    This is what V2 actually does in live replay — ADX is 0.0 for bars 1–27,
+    so the 09:30–09:45 decision window only sees zeros → always MR.
+    """
+    feat = session_dir / "features_snapshot.csv"
+    sid = session_dir.name
+    if not feat.is_file():
+        return AllocatorResult(session_id=sid, decision="mr", reason="V2_LIVE_NO_DATA")
+    try:
+        df = pd.read_csv(feat)
+    except Exception:
+        return AllocatorResult(session_id=sid, decision="mr", reason="V2_LIVE_READ_ERR")
+    if df.empty or "adx" not in df.columns:
+        return AllocatorResult(session_id=sid, decision="mr", reason="V2_LIVE_NO_ADX")
+
+    # Read actual first 3 bars (the decision window), DO NOT skip zeros
+    adx = pd.to_numeric(df["adx"], errors="coerce").fillna(0.0).tolist()
+    first3 = adx[:3]
+    trend_open = any(v >= 25.0 for v in first3)
+    rising_ok = (
+        len(first3) >= 3
+        and all(v > 20.0 for v in first3)
+        and all(first3[i] < first3[i + 1] for i in range(len(first3) - 1))
+    )
+    range_ok = len(first3) >= 3 and all(v <= 18.0 for v in first3)
+    if trend_open or rising_ok:
+        decision = "orb"
+        reason = "V2_LIVE_TREND" if trend_open else "V2_LIVE_RISING"
+    elif range_ok:
+        decision = "mr"
+        reason = "V2_LIVE_RANGE"
+    else:
+        decision = "mr"
+        reason = "V2_LIVE_DEFAULT_MR"
+    return AllocatorResult(session_id=sid, decision=decision, reason=reason)
+
+
 # ═══════════════════════════════════════════════════════════════════════
-#  Allocator simulation — open_proxy_v1 (from features_snapshot bars)
+#  Allocator simulation — open_proxy_v1 (from cached tick data)
 # ═══════════════════════════════════════════════════════════════════════
+
+def _build_5min_bars(ticks: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate tick DataFrame (timestamp, price, size) into 5-min OHLCV bars."""
+    if ticks.empty:
+        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
+    df = ticks.copy()
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True)
+    df = df.set_index("timestamp").sort_index()
+    bars = df["price"].resample("5min").ohlc()
+    bars.columns = ["open", "high", "low", "close"]
+    bars["volume"] = df["size"].resample("5min").sum()
+    bars = bars.dropna(subset=["open"])
+    bars = bars.reset_index()
+    return bars
+
+
+def _session_id_to_parquet(session_id: str) -> Path | None:
+    """Map session_YYYYMMDD → cached tick parquet path."""
+    # session_id = "session_20260126"  →  date_str = "20260126"
+    date_str = session_id.replace("session_", "")
+    # Parquet pattern: YYYYMMDD_143000__YYYYMMDD_210000.parquet
+    pq = _TICK_CACHE / f"{date_str}_143000__{date_str}_210000.parquet"
+    if pq.is_file():
+        return pq
+    return None
+
 
 def _allocator_open_proxy_decision(
     session_dir: Path,
     cfg: OpenProxyConfig,
 ) -> AllocatorResult:
-    """Simulate open_proxy_v1 from the stored features_snapshot.csv bars.
+    """Simulate open_proxy_v1 from cached tick data → 5-min bars.
 
-    Reads the first few bars' OHLC data from the features CSV to reconstruct
-    the opening range and impulse signals. Falls back to session_summary if
-    available.
+    Builds real OHLC bars from the Databento tick cache, extracts the
+    opening-range bars (09:30–09:45 ET) and post-OR bars, reads ATR from
+    features_snapshot.csv, then calls the open_proxy decision logic.
     """
     sid = session_dir.name
-    feat = session_dir / "features_snapshot.csv"
 
-    # We need OHLC bar data. features_snapshot.csv typically only has
-    # indicators. We'll reconstruct from the session replay CSV if available,
-    # or fall back to the session_summary's OR levels.
-    bars_csv = session_dir / "bars.csv"
-    summary_path = session_dir / "session_summary.json"
-
-    # Try to read ATR from features
+    # ── 1. Read ATR from features_snapshot ──────────────────────────────
     atr_at_decision = 0.0
+    feat = session_dir / "features_snapshot.csv"
     if feat.is_file():
         try:
             fdf = pd.read_csv(feat)
@@ -304,105 +371,69 @@ def _allocator_open_proxy_decision(
                 atr_vals = pd.to_numeric(fdf["atr"], errors="coerce").dropna()
                 atr_vals = atr_vals[atr_vals > 0]
                 if len(atr_vals) >= 3:
-                    # ATR at bar 3 (or earliest available)
                     atr_at_decision = float(atr_vals.iloc[min(2, len(atr_vals) - 1)])
                 elif len(atr_vals) > 0:
                     atr_at_decision = float(atr_vals.iloc[0])
         except Exception:
             pass
-
     if atr_at_decision <= 0:
         atr_at_decision = 5.0  # fallback for MES typical ATR
 
-    # Build OpenWindowState from available data
+    # ── 2. Load tick data and build 5-min bars ──────────────────────────
+    pq_path = _session_id_to_parquet(sid)
+    if pq_path is None:
+        # No tick data — return INSUFFICIENT_DATA
+        result = open_proxy_decide(OpenWindowState(), cfg)
+        return AllocatorResult(
+            session_id=sid, decision=result.decision, reason=f"NO_TICK_DATA/{result.reason}",
+        )
+
+    try:
+        ticks = pd.read_parquet(pq_path)
+    except Exception as exc:
+        result = open_proxy_decide(OpenWindowState(), cfg)
+        return AllocatorResult(
+            session_id=sid, decision=result.decision, reason=f"PARQUET_ERR/{exc}",
+        )
+
+    bars = _build_5min_bars(ticks)
+    if bars.empty:
+        result = open_proxy_decide(OpenWindowState(), cfg)
+        return AllocatorResult(
+            session_id=sid, decision=result.decision, reason="NO_BARS",
+        )
+
+    # Convert bar timestamps to ET for time-window matching
+    bars["et"] = bars["timestamp"].dt.tz_convert(_ET)
+    bars["et_time"] = bars["et"].dt.strftime("%H:%M")
+
+    # ── 3. Extract OR bars (09:30–09:40 inclusive → 3 bars at 09:30, 09:35, 09:40) ──
+    or_mask = (bars["et_time"] >= config.RTH_OPEN) & (bars["et_time"] < config.ORB_END)
+    or_bars = bars[or_mask]
+
+    # Post-OR bars (09:45+) — take first N for persistence
+    post_mask = bars["et_time"] >= config.ORB_END
+    post_bars = bars[post_mask].head(max(3, cfg.persist_bars))
+
+    # ── 4. Build OpenWindowState ────────────────────────────────────────
     state = OpenWindowState()
     state.atr_at_decision = atr_at_decision
 
-    # Strategy: read session_summary for OR levels + orb_funnel diag
-    or_high = 0.0
-    or_low = 0.0
-    bar_data_found = False
+    if len(or_bars) > 0:
+        state.first_bar_open = float(or_bars.iloc[0]["open"])
+        for _, row in or_bars.iterrows():
+            bt = (float(row["open"]), float(row["high"]),
+                  float(row["low"]), float(row["close"]))
+            state.bars.append(bt)
+            state.or_high = max(state.or_high, float(row["high"]))
+            state.or_low = min(state.or_low, float(row["low"]))
 
-    if summary_path.is_file():
-        try:
-            with open(summary_path) as f:
-                summary = json.load(f)
-            orb_funnel = summary.get("orb_funnel", {})
-            diags = orb_funnel.get("pullback_v3_diagnostics", [])
-            if diags:
-                or_high = float(diags[0].get("or_high", 0.0))
-                or_low = float(diags[0].get("or_low", 0.0))
-        except Exception:
-            pass
+    for _, row in post_bars.iterrows():
+        bt = (float(row["open"]), float(row["high"]),
+              float(row["low"]), float(row["close"]))
+        state.post_or_bars.append(bt)
 
-    # Try to read bar OHLC from features or reconstruct
-    # features_snapshot has timestamp + indicators but NOT bar OHLC
-    # We need to look for an alternative data source
-    # The replay_debug exports signals.csv with bar data but not bars themselves
-    # Best approach: read OR high/low from session_summary if available,
-    # and for impulse, read the price trajectory from features timestamps
-
-    if or_high > or_low:
-        # We have OR levels from the session summary
-        state.or_high = or_high
-        state.or_low = or_low
-        # Synthesize bars from OR range
-        # The first 3 bars span OR; we can compute impulse from mid-range assumption
-        # For more accuracy, try to read close prices from the replay data
-        bar_data_found = True
-
-    # Try to get close prices from features_snapshot (regime column timing)
-    # to compute impulse metric
-    if feat.is_file():
-        try:
-            fdf = pd.read_csv(feat)
-            if "timestamp" in fdf.columns:
-                ts = pd.to_datetime(fdf["timestamp"], utc=True, errors="coerce")
-                import pytz
-                ET = pytz.timezone(config.TIMEZONE)
-                et_times = ts.dt.tz_convert(ET).dt.strftime("%H:%M")
-
-                # Parse bars from signals.csv if it exists (has OHLC)
-                signals_csv = session_dir / "signals.csv"
-                if signals_csv.is_file():
-                    sdf = pd.read_csv(signals_csv)
-                    if all(c in sdf.columns for c in ("open", "high", "low", "close")):
-                        bar_data_found = True
-                        sts = pd.to_datetime(sdf["timestamp"], utc=True, errors="coerce")
-                        s_et_times = sts.dt.tz_convert(ET).dt.strftime("%H:%M")
-
-                        or_bars = sdf[(s_et_times >= config.RTH_OPEN) & (s_et_times < config.ORB_END)]
-                        if len(or_bars) > 0:
-                            state.first_bar_open = float(or_bars.iloc[0]["open"])
-                            for _, row in or_bars.iterrows():
-                                bt = (float(row["open"]), float(row["high"]),
-                                      float(row["low"]), float(row["close"]))
-                                state.bars.append(bt)
-                                state.or_high = max(state.or_high, float(row["high"]))
-                                state.or_low = min(state.or_low, float(row["low"]))
-
-                        post_bars = sdf[s_et_times >= config.ORB_END]
-                        for _, row in post_bars.head(max(3, cfg.persist_bars)).iterrows():
-                            bt = (float(row["open"]), float(row["high"]),
-                                  float(row["low"]), float(row["close"]))
-                            state.post_or_bars.append(bt)
-        except Exception:
-            pass
-
-    # If we still don't have bar data but have OR levels, synthesize
-    if not state.bars and or_high > or_low:
-        # Synthesize 3 bars spanning the OR
-        mid = (or_high + or_low) / 2.0
-        state.first_bar_open = mid
-        state.bars = [
-            (mid, or_high, or_low, mid + (or_high - or_low) * 0.2),
-            (mid, or_high, or_low, mid + (or_high - or_low) * 0.3),
-            (mid, or_high, or_low, mid + (or_high - or_low) * 0.4),
-        ]
-        state.or_high = or_high
-        state.or_low = or_low
-
-    # Run decision
+    # ── 5. Run decision ─────────────────────────────────────────────────
     result = open_proxy_decide(state, cfg)
 
     return AllocatorResult(
@@ -436,6 +467,8 @@ def _run_cell(
         # Determine routing
         if allocator == "v2_hyst":
             ar = _allocator_v2_decision(sinfo.session_dir)
+        elif allocator == "v2_live":
+            ar = _allocator_v2_live_decision(sinfo.session_dir)
         elif allocator == "open_proxy_v1":
             ar = _allocator_open_proxy_decision(sinfo.session_dir, open_proxy_cfg)
         else:
@@ -575,7 +608,7 @@ def main() -> int:
           f"require_break={open_proxy_cfg.require_break}")
     print("=" * 80)
 
-    allocators = ["v2_hyst", "open_proxy_v1"]
+    allocators = ["v2_live", "v2_hyst", "open_proxy_v1"]
     all_cells: list[CellResult] = []
 
     for dataset, run_ids in run_map.items():
