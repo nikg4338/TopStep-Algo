@@ -259,7 +259,7 @@ class ValidationPackRunner:
         allocator_v2_rising_bars: int = 3,
         allocator_v2_range_threshold: float = 18.0,
         allocator_v2_range_bars: int = 3,
-        alloc_openproxy_or_width_atr: float = 0.8,
+        alloc_openproxy_or_width_atr: float = 2.2,
         alloc_openproxy_impulse_atr: float = 0.9,
         alloc_openproxy_persist_bars: int = 1,
         alloc_openproxy_require_break: bool = False,

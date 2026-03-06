@@ -159,12 +159,12 @@ def _build_parser() -> argparse.ArgumentParser:
         default="none",
         help="Day-level allocator policy (applies only when --engine-mode both)",
     )
-    # ── open_proxy_v1 allocator flags ───────────────────────────────────
+    # ── open_proxy_v1 allocator flags (calibrated to ~53% ORB routing) ──
     p.add_argument(
         "--alloc-openproxy-or-width-atr",
         type=float,
-        default=0.8,
-        help="open_proxy_v1: OR width / ATR threshold for trend signal",
+        default=2.2,
+        help="open_proxy_v1: OR width / ATR threshold for trend signal (calibrated: 2.2)",
     )
     p.add_argument(
         "--alloc-openproxy-impulse-atr",

@@ -541,9 +541,9 @@ def _build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="Allocator v1_1 experiment matrix: ALLOC_V2_HYST vs open_proxy_v1",
     )
-    # open_proxy_v1 thresholds
-    p.add_argument("--or-width-atr", type=float, default=0.8,
-                    help="OR width / ATR threshold")
+    # open_proxy_v1 thresholds (calibrated to match ~53% ORB routing from warm-ADX audit)
+    p.add_argument("--or-width-atr", type=float, default=2.2,
+                    help="OR width / ATR threshold (calibrated: 2.2)")
     p.add_argument("--impulse-atr", type=float, default=0.9,
                     help="|first 3-bar net move| / ATR threshold")
     p.add_argument("--persist-bars", type=int, default=1,

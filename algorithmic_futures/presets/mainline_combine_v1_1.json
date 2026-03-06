@@ -20,7 +20,7 @@
   "allocator": {
     "policy": "open_proxy_v1",
     "_note": "Replaces ALLOC_V2_HYST which cannot route ORB due to ADX warmup bug",
-    "open_proxy_or_width_atr": 0.8,
+    "open_proxy_or_width_atr": 2.2,
     "open_proxy_impulse_atr": 0.9,
     "open_proxy_persist_bars": 1,
     "open_proxy_require_break": false,

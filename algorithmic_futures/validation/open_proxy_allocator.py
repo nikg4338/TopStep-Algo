@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 @dataclass(frozen=True)
 class OpenProxyConfig:
     """Tuneable thresholds for open_proxy_v1 allocator."""
-    or_width_atr_threshold: float = 0.8    # OR width / ATR >= this → trend signal
+    or_width_atr_threshold: float = 2.2    # OR width / ATR >= this → trend signal
     impulse_atr_threshold: float = 0.9     # |first 3-bar net move| / ATR >= this → trend signal
     persist_bars: int = 1                  # consecutive closes beyond OR to confirm breakout
     require_break: bool = False            # if True, breakout_persistence must fire (not just width/impulse)

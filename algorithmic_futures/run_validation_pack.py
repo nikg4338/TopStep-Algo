@@ -38,6 +38,7 @@ def _load_preset(name: str) -> dict:
 
     s = preset.get("sizing", {})
     t = preset.get("trend_engine", {})
+    a = preset.get("allocator", {})
     overrides = {
         # Sizing
         "sizing_policy": s.get("policy", "dynamic_v3"),
@@ -53,11 +54,17 @@ def _load_preset(name: str) -> dict:
         "orb_pullback_confirm_bars": t.get("pullback_v3_max_bars", 3),
         # Engine / allocator
         "engine_mode": "both",
-        "allocator_policy": "v2",
+        "allocator_policy": a.get("policy", "v2"),
         "orb_enabled": "on",
         "mr_reclaim_mode": "off",
         "mr_regime_enabled": "on",
     }
+    # open_proxy_v1 thresholds from preset
+    if a.get("policy") == "open_proxy_v1":
+        overrides["alloc_openproxy_or_width_atr"] = a.get("open_proxy_or_width_atr", 2.2)
+        overrides["alloc_openproxy_impulse_atr"] = a.get("open_proxy_impulse_atr", 0.9)
+        overrides["alloc_openproxy_persist_bars"] = a.get("open_proxy_persist_bars", 1)
+        overrides["alloc_openproxy_require_break"] = "on" if a.get("open_proxy_require_break", False) else "off"
     _PRESET_TO_CLI[name] = overrides
     return overrides
 
@@ -240,12 +247,12 @@ def main() -> int:
         default=3,
         help="Allocator v2 range-ADX consecutive bars requirement",
     )
-    # ── open_proxy_v1 allocator flags ─────────────────────────────────
+    # ── open_proxy_v1 allocator flags (calibrated to ~53% ORB routing) ─
     parser.add_argument(
         "--alloc-openproxy-or-width-atr",
         type=float,
-        default=0.8,
-        help="open_proxy_v1: OR width / ATR threshold for trend signal",
+        default=2.2,
+        help="open_proxy_v1: OR width / ATR threshold for trend signal (calibrated: 2.2)",
     )
     parser.add_argument(
         "--alloc-openproxy-impulse-atr",
@@ -512,7 +519,7 @@ def main() -> int:
         allocator_v2_rising_bars=max(1, int(args.allocator_v2_rising_bars)),
         allocator_v2_range_threshold=float(args.allocator_v2_range_threshold),
         allocator_v2_range_bars=max(1, int(args.allocator_v2_range_bars)),
-        alloc_openproxy_or_width_atr=float(getattr(args, "alloc_openproxy_or_width_atr", 0.8)),
+        alloc_openproxy_or_width_atr=float(getattr(args, "alloc_openproxy_or_width_atr", 2.2)),
         alloc_openproxy_impulse_atr=float(getattr(args, "alloc_openproxy_impulse_atr", 0.9)),
         alloc_openproxy_persist_bars=max(0, int(getattr(args, "alloc_openproxy_persist_bars", 1))),
         alloc_openproxy_require_break=(getattr(args, "alloc_openproxy_require_break", "off") == "on"),
