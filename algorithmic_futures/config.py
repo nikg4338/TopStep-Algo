@@ -23,6 +23,14 @@ DATABENTO_DATASET: str = "GLBX.MDP3"
 DATABENTO_STYPE_IN: str = "continuous"
 DATABENTO_SYMBOL: str = "MES.c.0"
 
+# open_proxy_v1 selectivity refinement defaults (research-only; disabled by default)
+ALLOC_OPENPROXY_SELECTIVITY_ENABLED: bool = False
+ALLOC_OPENPROXY_LOW_ATR_THRESHOLD: float = 10.0
+ALLOC_OPENPROXY_MIN_PERSISTENCE_IN_LOW_ATR: int = 2
+ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD: float = 2.4
+ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE: int = 1
+ALLOC_OPENPROXY_MEDIUM_IMPULSE_WEAK_PERSISTENCE_FILTER_ENABLED: bool = False
+
 # ── Execution Mode ──────────────────────────────────────────────────────
 # "projectx_native"  — use ProjectX OCO / native CVD when available
 # "client_fallback"  — client-side bracket emulation + proxy CVD
@@ -116,6 +124,11 @@ MC_RUIN_THRESHOLD: float     = 0.15       # Reject if ruin prob > 15 %
 MC_TARGET_THRESHOLD: float   = 0.60       # Reject if target prob < 60 %
 MC_DRAWDOWN_P95_MAX: float   = 1_200.0    # Reject if 95th pct DD > $1,200
 MC_LOSING_STREAK_P95_MAX: int = 8         # Reject if 95th pct streak ≥ 8
+
+# ── Candidate Promotion Governance ─────────────────────────────────────
+# Separate from engineering integrity: a candidate may be structurally sound
+# yet still held back from combine deployment if target probability is weak.
+CANDIDATE_PROMOTION_TARGET_THRESHOLD: float = MC_TARGET_THRESHOLD
 
 # ── Monte Carlo Day-Horizon Gate ────────────────────────────────────────
 # Primary MC objective: P(hit target within N trading days) before ruin.

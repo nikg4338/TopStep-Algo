@@ -42,6 +42,7 @@ import pytz
 from dotenv import load_dotenv
 
 import config
+from validation.preset_utils import normalize_allocator_policy
 from data.databento_provider import DatabentoReplayProvider
 from data.indicators import ATRCalculator, VWAPCalculator, VWAPState
 from data.market_data import Bar, IntradayBarAggregator
@@ -183,6 +184,42 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("on", "off"),
         default="off",
         help="open_proxy_v1: require breakout persistence (not just width/impulse)",
+    )
+    p.add_argument(
+        "--alloc-openproxy-enable-orb-selectivity-refinement",
+        choices=("on", "off"),
+        default=("on" if config.ALLOC_OPENPROXY_SELECTIVITY_ENABLED else "off"),
+        help="open_proxy_v1: enable research-only ORB selectivity refinement",
+    )
+    p.add_argument(
+        "--alloc-openproxy-low-atr-threshold",
+        type=float,
+        default=config.ALLOC_OPENPROXY_LOW_ATR_THRESHOLD,
+        help="open_proxy_v1: low-ATR threshold below which ORB requires stronger persistence",
+    )
+    p.add_argument(
+        "--alloc-openproxy-min-persistence-in-low-atr",
+        type=int,
+        default=config.ALLOC_OPENPROXY_MIN_PERSISTENCE_IN_LOW_ATR,
+        help="open_proxy_v1: minimum persistence required in low-ATR contexts",
+    )
+    p.add_argument(
+        "--alloc-openproxy-high-impulse-threshold",
+        type=float,
+        default=config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD,
+        help="open_proxy_v1: impulse threshold above which weak persistence blocks ORB routing",
+    )
+    p.add_argument(
+        "--alloc-openproxy-min-persistence-when-high-impulse",
+        type=int,
+        default=config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE,
+        help="open_proxy_v1: minimum persistence required when impulse exceeds the high-impulse threshold",
+    )
+    p.add_argument(
+        "--alloc-openproxy-medium-impulse-weak-persistence-filter-enabled",
+        choices=("on", "off"),
+        default=("on" if config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_WEAK_PERSISTENCE_FILTER_ENABLED else "off"),
+        help="open_proxy_v1: enable research-only filter for medium-impulse weak-persistence ORB conditions",
     )
     p.add_argument(
         "--allocator-v1-adx-threshold",
@@ -514,8 +551,9 @@ def run_debug_replay(args: argparse.Namespace) -> int:
     else:
         orb_enabled = base_orb_enabled
 
-    allocator_policy = getattr(args, "allocator_policy", "none")
-    if allocator_policy not in {"none", "v1", "v2", "open_proxy_v1"}:
+    try:
+        allocator_policy = normalize_allocator_policy(getattr(args, "allocator_policy", "none"))
+    except ValueError:
         allocator_policy = "none"
     allocator_v1_adx_threshold = float(getattr(args, "allocator_v1_adx_threshold", 25.0))
     allocator_v2_trend_open_threshold = float(getattr(args, "allocator_v2_trend_open_threshold", 25.0))
@@ -534,6 +572,12 @@ def run_debug_replay(args: argparse.Namespace) -> int:
         impulse_atr_threshold=float(getattr(args, "alloc_openproxy_impulse_atr", 0.9)),
         persist_bars=max(0, int(getattr(args, "alloc_openproxy_persist_bars", 1))),
         require_break=(getattr(args, "alloc_openproxy_require_break", "off") == "on"),
+        enable_orb_selectivity_refinement=(getattr(args, "alloc_openproxy_enable_orb_selectivity_refinement", "off") == "on"),
+        orb_selectivity_low_atr_threshold=float(getattr(args, "alloc_openproxy_low_atr_threshold", config.ALLOC_OPENPROXY_LOW_ATR_THRESHOLD)),
+        orb_selectivity_min_persistence_in_low_atr=max(0, int(getattr(args, "alloc_openproxy_min_persistence_in_low_atr", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_IN_LOW_ATR))),
+        orb_selectivity_high_impulse_threshold=float(getattr(args, "alloc_openproxy_high_impulse_threshold", config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD)),
+        orb_selectivity_min_persistence_when_high_impulse=max(0, int(getattr(args, "alloc_openproxy_min_persistence_when_high_impulse", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE))),
+        enable_medium_impulse_weak_persistence_filter=(getattr(args, "alloc_openproxy_medium_impulse_weak_persistence_filter_enabled", "off") == "on"),
     )
     open_proxy_state = OpenWindowState()
     open_proxy_result: OpenProxyDecision | None = None
@@ -698,6 +742,17 @@ def run_debug_replay(args: argparse.Namespace) -> int:
                     f"impulse={open_proxy_result.trigger_impulse} "
                     f"persist={open_proxy_result.trigger_persist}"
                 )
+                if open_proxy_result.selectivity_orb_blocked:
+                    print(
+                        f"    [OPEN_PROXY_SELECTIVITY] blocked=True explanation={open_proxy_result.selectivity_block_reason} "
+                        f"pre_decision={open_proxy_result.pre_selectivity_decision}"
+                    )
+                if open_proxy_result.selectivity_v3_orb_blocked:
+                    print(
+                        f"    [OPEN_PROXY_SELECTIVITY_V3] blocked=True explanation={open_proxy_result.selectivity_v3_block_reason} "
+                        f"pre_decision={open_proxy_result.pre_v3_selectivity_decision} "
+                        f"post_decision={open_proxy_result.post_v3_selectivity_decision}"
+                    )
 
         # 4) ORB
         orb_tracker.on_bar(bar)
@@ -1279,6 +1334,12 @@ def run_debug_replay(args: argparse.Namespace) -> int:
                     "ALLOC_OPENPROXY_IMPULSE_ATR": open_proxy_cfg.impulse_atr_threshold,
                     "ALLOC_OPENPROXY_PERSIST_BARS": open_proxy_cfg.persist_bars,
                     "ALLOC_OPENPROXY_REQUIRE_BREAK": open_proxy_cfg.require_break,
+                    "ALLOC_OPENPROXY_ENABLE_ORB_SELECTIVITY_REFINEMENT": open_proxy_cfg.enable_orb_selectivity_refinement,
+                    "ALLOC_OPENPROXY_LOW_ATR_THRESHOLD": open_proxy_cfg.orb_selectivity_low_atr_threshold,
+                    "ALLOC_OPENPROXY_MIN_PERSISTENCE_IN_LOW_ATR": open_proxy_cfg.orb_selectivity_min_persistence_in_low_atr,
+                    "ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD": open_proxy_cfg.orb_selectivity_high_impulse_threshold,
+                    "ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE": open_proxy_cfg.orb_selectivity_min_persistence_when_high_impulse,
+                    "ALLOC_OPENPROXY_MEDIUM_IMPULSE_WEAK_PERSISTENCE_FILTER_ENABLED": open_proxy_cfg.enable_medium_impulse_weak_persistence_filter,
                     "ORB_ENABLED": orb_enabled,
                     "ORB_TRIGGER_MODE": getattr(args, "orb_trigger_mode", config.ORB_TRIGGER_MODE),
                     "ORB_PULLBACK_V3_MAX_BARS": orb_pb3_max_bars,
@@ -1319,6 +1380,18 @@ def run_debug_replay(args: argparse.Namespace) -> int:
                     "trigger_impulse": open_proxy_result.trigger_impulse,
                     "trigger_persist": open_proxy_result.trigger_persist,
                     "atr_at_decision": open_proxy_result.atr_at_decision,
+                    "pre_selectivity_decision": open_proxy_result.pre_selectivity_decision,
+                    "pre_selectivity_reason": open_proxy_result.pre_selectivity_reason,
+                    "selectivity_refinement_enabled": open_proxy_result.selectivity_refinement_enabled,
+                    "selectivity_low_atr_caution": open_proxy_result.selectivity_low_atr_caution,
+                    "selectivity_high_impulse_caution": open_proxy_result.selectivity_high_impulse_caution,
+                    "selectivity_orb_blocked": open_proxy_result.selectivity_orb_blocked,
+                    "selectivity_block_reason": open_proxy_result.selectivity_block_reason,
+                    "selectivity_medium_impulse_weak_persistence_caution": open_proxy_result.selectivity_medium_impulse_weak_persistence_caution,
+                    "selectivity_v3_orb_blocked": open_proxy_result.selectivity_v3_orb_blocked,
+                    "selectivity_v3_block_reason": open_proxy_result.selectivity_v3_block_reason,
+                    "pre_v3_selectivity_decision": open_proxy_result.pre_v3_selectivity_decision,
+                    "post_v3_selectivity_decision": open_proxy_result.post_v3_selectivity_decision,
                 } if open_proxy_result is not None else None,
             }
         )

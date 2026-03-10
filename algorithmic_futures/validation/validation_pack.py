@@ -24,11 +24,14 @@ import hashlib
 import json
 import logging
 import os
+import csv
 import time
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Any
+
+from validation.preset_utils import normalize_allocator_policy
 
 logger = logging.getLogger(__name__)
 
@@ -152,6 +155,11 @@ def _build_generated_pack(
 
 # Register generated packs lazily (built on first access)
 _GENERATED_PACK_SPECS: dict[str, dict] = {
+    "historical_holdout_20d": {
+        "description": "Historical holdout 20-day pack — Nov 3 to Nov 28, 2025 (full RTH sessions, pre-extended window)",
+        "start_date": "2025-11-03",
+        "end_date": "2025-11-28",
+    },
     "pilot_20d": {
         "description": "Pilot 20-day pack — Jan 26 to Feb 20, 2026 (full RTH sessions)",
         "start_date": "2026-01-26",
@@ -163,6 +171,51 @@ _GENERATED_PACK_SPECS: dict[str, dict] = {
         "end_date": "2026-02-20",
     },
 }
+
+_TREND20_SOURCE_RUN_ID = "trend20_adx_20260226_232222"
+
+
+def _pack_from_session_ids(
+    *,
+    pack_id: str,
+    description: str,
+    source_pack: ValidationPack,
+    session_ids: list[str],
+) -> ValidationPack:
+    by_id = {s.session_id: s for s in source_pack.sessions}
+    entries = [
+        SessionEntry(
+            session_id=s.session_id,
+            start=s.start,
+            end=s.end,
+            category=s.category,
+            symbol=s.symbol,
+            tags=list(s.tags),
+            notes=s.notes,
+        )
+        for sid in session_ids
+        if (s := by_id.get(sid)) is not None
+    ]
+    return ValidationPack(pack_id=pack_id, description=description, sessions=entries)
+
+
+def _build_trend20_pack(source_run_id: str = _TREND20_SOURCE_RUN_ID) -> ValidationPack:
+    run_dir = Path("artifacts/validation_runs") / source_run_id
+    manifest_path = run_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(
+            f"trend20 source manifest not found: {manifest_path}. "
+            "Use pilot_20d/extended_60d or restore the trend20 source run."
+        )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    session_ids = [str(s.get("session_id")) for s in manifest.get("sessions", []) if s.get("session_id")]
+    extended = load_pack("extended_60d")
+    return _pack_from_session_ids(
+        pack_id="trend20",
+        description=f"Trend-selected 20-session pack sourced from {source_run_id}",
+        source_pack=extended,
+        session_ids=session_ids,
+    )
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -195,7 +248,10 @@ def load_pack(pack_name: str) -> ValidationPack:
             end_date=spec["end_date"],
         )
 
-    available = sorted(set(BUILTIN_PACKS.keys()) | set(_GENERATED_PACK_SPECS.keys()))
+    if pack_name == "trend20":
+        return _build_trend20_pack()
+
+    available = sorted(set(BUILTIN_PACKS.keys()) | set(_GENERATED_PACK_SPECS.keys()) | {"trend20"})
     raise ValueError(
         f"Unknown pack '{pack_name}'. Available packs: {', '.join(available)}"
     )
@@ -263,6 +319,12 @@ class ValidationPackRunner:
         alloc_openproxy_impulse_atr: float = 0.9,
         alloc_openproxy_persist_bars: int = 1,
         alloc_openproxy_require_break: bool = False,
+        alloc_openproxy_enable_orb_selectivity_refinement: bool = False,
+        alloc_openproxy_low_atr_threshold: float = 10.0,
+        alloc_openproxy_min_persistence_in_low_atr: int = 2,
+        alloc_openproxy_high_impulse_threshold: float = 2.4,
+        alloc_openproxy_min_persistence_when_high_impulse: int = 1,
+        alloc_openproxy_medium_impulse_weak_persistence_filter_enabled: bool = False,
         orb_enabled: bool = False,
         orb_trigger_mode: str = "either",
         orb_pullback_confirm_bars: int = 3,
@@ -312,9 +374,7 @@ class ValidationPackRunner:
         if engine_mode not in {"mr", "orb", "both"}:
             raise ValueError("engine_mode must be 'mr', 'orb', or 'both'")
         self.engine_mode = engine_mode
-        if allocator_policy not in {"none", "v1", "v2", "open_proxy_v1"}:
-            raise ValueError("allocator_policy must be 'none', 'v1', 'v2', or 'open_proxy_v1'")
-        self.allocator_policy = allocator_policy
+        self.allocator_policy = normalize_allocator_policy(allocator_policy)
         self.allocator_v1_adx_threshold = float(allocator_v1_adx_threshold)
         self.allocator_v2_trend_open_threshold = float(allocator_v2_trend_open_threshold)
         self.allocator_v2_rising_threshold = float(allocator_v2_rising_threshold)
@@ -325,6 +385,12 @@ class ValidationPackRunner:
         self.alloc_openproxy_impulse_atr = float(alloc_openproxy_impulse_atr)
         self.alloc_openproxy_persist_bars = max(0, int(alloc_openproxy_persist_bars))
         self.alloc_openproxy_require_break = bool(alloc_openproxy_require_break)
+        self.alloc_openproxy_enable_orb_selectivity_refinement = bool(alloc_openproxy_enable_orb_selectivity_refinement)
+        self.alloc_openproxy_low_atr_threshold = float(alloc_openproxy_low_atr_threshold)
+        self.alloc_openproxy_min_persistence_in_low_atr = max(0, int(alloc_openproxy_min_persistence_in_low_atr))
+        self.alloc_openproxy_high_impulse_threshold = float(alloc_openproxy_high_impulse_threshold)
+        self.alloc_openproxy_min_persistence_when_high_impulse = max(0, int(alloc_openproxy_min_persistence_when_high_impulse))
+        self.alloc_openproxy_medium_impulse_weak_persistence_filter_enabled = bool(alloc_openproxy_medium_impulse_weak_persistence_filter_enabled)
         self.orb_enabled = bool(orb_enabled)
         self.orb_trigger_mode = orb_trigger_mode if orb_trigger_mode in {"break", "pullback", "either", "pullback_v3"} else "either"
         self.orb_pullback_confirm_bars = max(1, int(orb_pullback_confirm_bars))
@@ -563,6 +629,9 @@ class ValidationPackRunner:
             decisions_path = run_dir / "allocator_decisions.json"
             decisions_path.write_text(json.dumps(allocator_decisions, indent=2) + "\n", encoding="utf-8")
             logger.info("Allocator decisions written -> %s", decisions_path)
+        allocator_debug_path = self._stage_allocator_debug(run_dir)
+        if allocator_debug_path is not None:
+            logger.info("Allocator debug CSV written -> %s", allocator_debug_path)
 
         # ── Write sizing artifacts ──────────────────────────────────────
         if sizing_policy.daily_log:
@@ -783,6 +852,113 @@ class ValidationPackRunner:
             print(f"    ✗ Gate FAILED: {type(exc).__name__}: {exc}")
             return None
 
+    def _stage_allocator_debug(self, run_dir: Path) -> Path | None:
+        """Stage allocator session-level diagnostics as a single CSV artifact."""
+        sessions_dir = run_dir / "sessions"
+        if not sessions_dir.is_dir():
+            return None
+
+        rows: list[dict[str, Any]] = []
+        for session_dir in sorted(p for p in sessions_dir.iterdir() if p.is_dir()):
+            summary_path = session_dir / "session_summary.json"
+            if not summary_path.is_file():
+                continue
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            except Exception:
+                logger.exception("Failed reading session summary for allocator debug: %s", summary_path)
+                continue
+
+            orb_funnel = summary.get("orb_funnel", {}) or {}
+            open_proxy = orb_funnel.get("open_proxy_diagnostics", {}) or {}
+            session_pnl = self._read_session_pnl_dollars(session_dir)
+            trade_count = self._read_session_trade_count(session_dir)
+            route = orb_funnel.get("allocator_decision") or orb_funnel.get("engine_mode") or self.engine_mode
+            notes = orb_funnel.get("allocator_reason", "")
+            rows.append(
+                {
+                    "session_id": summary.get("session_id", session_dir.name),
+                    "date": session_dir.name.replace("session_", ""),
+                    "allocator_policy": orb_funnel.get("allocator_policy", self.allocator_policy),
+                    "route": route,
+                    "engine_mode": orb_funnel.get("engine_mode", self.engine_mode),
+                    "opening_range_width": open_proxy.get("opening_range_width_pts", 0.0),
+                    "atr": open_proxy.get("atr_at_decision", 0.0),
+                    "width_atr": open_proxy.get("opening_range_width_atr", 0.0),
+                    "impulse": open_proxy.get("first_3bar_directional_impulse", 0.0),
+                    "persistence": open_proxy.get("persist_bars_observed", 0),
+                    "close_location": open_proxy.get("close_location_in_opening_range", ""),
+                    "one_sidedness": open_proxy.get("one_sidedness", open_proxy.get("signed_imbalance", 0.0)),
+                    "confidence_score": self._derive_allocator_confidence(open_proxy),
+                    "breakout_direction": open_proxy.get("breakout_direction", ""),
+                    "trigger_width": open_proxy.get("trigger_width", False),
+                    "trigger_impulse": open_proxy.get("trigger_impulse", False),
+                    "trigger_persist": open_proxy.get("trigger_persist", False),
+                    "breakout_persistence": open_proxy.get("breakout_persistence", False),
+                    "selectivity_refinement_enabled": open_proxy.get("selectivity_refinement_enabled", False),
+                    "selectivity_low_atr_caution": open_proxy.get("selectivity_low_atr_caution", False),
+                    "selectivity_high_impulse_caution": open_proxy.get("selectivity_high_impulse_caution", False),
+                    "selectivity_orb_blocked": open_proxy.get("selectivity_orb_blocked", False),
+                    "selectivity_block_reason": open_proxy.get("selectivity_block_reason", ""),
+                    "pre_selectivity_decision": open_proxy.get("pre_selectivity_decision", ""),
+                    "selectivity_medium_impulse_weak_persistence_caution": open_proxy.get("selectivity_medium_impulse_weak_persistence_caution", False),
+                    "selectivity_v3_orb_blocked": open_proxy.get("selectivity_v3_orb_blocked", False),
+                    "selectivity_v3_block_reason": open_proxy.get("selectivity_v3_block_reason", ""),
+                    "pre_v3_selectivity_decision": open_proxy.get("pre_v3_selectivity_decision", ""),
+                    "post_v3_selectivity_decision": open_proxy.get("post_v3_selectivity_decision", ""),
+                    "trade_count": trade_count,
+                    "session_pnl_dollars": session_pnl,
+                    "notes": notes,
+                }
+            )
+
+        if not rows:
+            return None
+
+        out_path = run_dir / "allocator_debug.csv"
+        fieldnames = list(rows[0].keys())
+        with out_path.open("w", newline="", encoding="utf-8") as fh:
+            writer = csv.DictWriter(fh, fieldnames=fieldnames)
+            writer.writeheader()
+            writer.writerows(rows)
+        return out_path
+
+    @staticmethod
+    def _read_session_trade_count(session_dir: Path) -> int:
+        trades_path = session_dir / "trades.csv"
+        if not trades_path.is_file():
+            return 0
+        try:
+            with trades_path.open("r", encoding="utf-8") as fh:
+                return max(sum(1 for _ in fh) - 1, 0)
+        except Exception:
+            return 0
+
+    @staticmethod
+    def _read_session_pnl_dollars(session_dir: Path) -> float:
+        trades_path = session_dir / "trades.csv"
+        if not trades_path.is_file():
+            return 0.0
+        pnl = 0.0
+        try:
+            with trades_path.open("r", encoding="utf-8", newline="") as fh:
+                reader = csv.DictReader(fh)
+                for row in reader:
+                    pnl += float(row.get("pnl_dollars", 0.0) or 0.0)
+        except Exception:
+            return 0.0
+        return round(pnl, 2)
+
+    @staticmethod
+    def _derive_allocator_confidence(open_proxy: dict[str, Any]) -> float:
+        if not open_proxy:
+            return 0.0
+        score = 0.0
+        score += min(float(open_proxy.get("opening_range_width_atr", 0.0) or 0.0) / 3.0, 1.0)
+        score += min(float(open_proxy.get("first_3bar_directional_impulse", 0.0) or 0.0) / 1.5, 1.0)
+        score += min(float(open_proxy.get("persist_bars_observed", 0) or 0) / 2.0, 1.0)
+        return round(score / 3.0, 4)
+
     # ── Sizing helpers ──────────────────────────────────────────────
 
     def _get_session_regime_engine(self, session_dir: Path) -> tuple[str, str]:
@@ -975,6 +1151,12 @@ class ValidationPackRunner:
             self.alloc_openproxy_impulse_atr,
             self.alloc_openproxy_persist_bars,
             self.alloc_openproxy_require_break,
+            self.alloc_openproxy_enable_orb_selectivity_refinement,
+            self.alloc_openproxy_low_atr_threshold,
+            self.alloc_openproxy_min_persistence_in_low_atr,
+            self.alloc_openproxy_high_impulse_threshold,
+            self.alloc_openproxy_min_persistence_when_high_impulse,
+            self.alloc_openproxy_medium_impulse_weak_persistence_filter_enabled,
             orb_enabled,
             self.orb_trigger_mode,
             self.orb_pullback_confirm_bars,
@@ -1049,6 +1231,12 @@ class ValidationPackRunner:
         alloc_openproxy_impulse_atr: float,
         alloc_openproxy_persist_bars: int,
         alloc_openproxy_require_break: bool,
+        alloc_openproxy_enable_orb_selectivity_refinement: bool,
+        alloc_openproxy_low_atr_threshold: float,
+        alloc_openproxy_min_persistence_in_low_atr: int,
+        alloc_openproxy_high_impulse_threshold: float,
+        alloc_openproxy_min_persistence_when_high_impulse: int,
+        alloc_openproxy_medium_impulse_weak_persistence_filter_enabled: bool,
         orb_enabled: bool,
         orb_trigger_mode: str,
         orb_pullback_confirm_bars: int,
@@ -1096,6 +1284,12 @@ class ValidationPackRunner:
             alloc_openproxy_impulse_atr=alloc_openproxy_impulse_atr,
             alloc_openproxy_persist_bars=alloc_openproxy_persist_bars,
             alloc_openproxy_require_break=("on" if alloc_openproxy_require_break else "off"),
+            alloc_openproxy_enable_orb_selectivity_refinement=("on" if alloc_openproxy_enable_orb_selectivity_refinement else "off"),
+            alloc_openproxy_low_atr_threshold=alloc_openproxy_low_atr_threshold,
+            alloc_openproxy_min_persistence_in_low_atr=alloc_openproxy_min_persistence_in_low_atr,
+            alloc_openproxy_high_impulse_threshold=alloc_openproxy_high_impulse_threshold,
+            alloc_openproxy_min_persistence_when_high_impulse=alloc_openproxy_min_persistence_when_high_impulse,
+            alloc_openproxy_medium_impulse_weak_persistence_filter_enabled=("on" if alloc_openproxy_medium_impulse_weak_persistence_filter_enabled else "off"),
         )
 
     @staticmethod

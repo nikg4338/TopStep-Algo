@@ -16,6 +16,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 import config
+from validation.preset_utils import normalize_allocator_policy
 
 
 # ── Preset loader ───────────────────────────────────────────────────────
@@ -39,6 +40,7 @@ def _load_preset(name: str) -> dict:
     s = preset.get("sizing", {})
     t = preset.get("trend_engine", {})
     a = preset.get("allocator", {})
+    policy = normalize_allocator_policy(a.get("policy", "v2"))
     overrides = {
         # Sizing
         "sizing_policy": s.get("policy", "dynamic_v3"),
@@ -54,17 +56,29 @@ def _load_preset(name: str) -> dict:
         "orb_pullback_confirm_bars": t.get("pullback_v3_max_bars", 3),
         # Engine / allocator
         "engine_mode": "both",
-        "allocator_policy": a.get("policy", "v2"),
+        "allocator_policy": policy,
         "orb_enabled": "on",
         "mr_reclaim_mode": "off",
         "mr_regime_enabled": "on",
+        "allocator_v1_adx_threshold": a.get("adx_trend_open_threshold", 25.0),
+        "allocator_v2_trend_open_threshold": a.get("adx_trend_open_threshold", 25.0),
+        "allocator_v2_rising_threshold": a.get("adx_rising_min", 20.0),
+        "allocator_v2_rising_bars": a.get("adx_rising_bars", 3),
+        "allocator_v2_range_threshold": a.get("adx_range_max", 18.0),
+        "allocator_v2_range_bars": a.get("adx_range_bars", 3),
     }
     # open_proxy_v1 thresholds from preset
-    if a.get("policy") == "open_proxy_v1":
+    if policy == "open_proxy_v1":
         overrides["alloc_openproxy_or_width_atr"] = a.get("open_proxy_or_width_atr", 2.2)
         overrides["alloc_openproxy_impulse_atr"] = a.get("open_proxy_impulse_atr", 0.9)
         overrides["alloc_openproxy_persist_bars"] = a.get("open_proxy_persist_bars", 1)
         overrides["alloc_openproxy_require_break"] = "on" if a.get("open_proxy_require_break", False) else "off"
+        overrides["alloc_openproxy_enable_orb_selectivity_refinement"] = "on" if a.get("enable_orb_selectivity_refinement", False) else "off"
+        overrides["alloc_openproxy_low_atr_threshold"] = a.get("orb_selectivity_low_atr_threshold", config.ALLOC_OPENPROXY_LOW_ATR_THRESHOLD)
+        overrides["alloc_openproxy_min_persistence_in_low_atr"] = a.get("orb_selectivity_min_persistence_in_low_atr", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_IN_LOW_ATR)
+        overrides["alloc_openproxy_high_impulse_threshold"] = a.get("orb_selectivity_high_impulse_threshold", config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD)
+        overrides["alloc_openproxy_min_persistence_when_high_impulse"] = a.get("orb_selectivity_min_persistence_when_high_impulse", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE)
+        overrides["alloc_openproxy_medium_impulse_weak_persistence_filter_enabled"] = "on" if a.get("medium_impulse_weak_persistence_filter_enabled", False) else "off"
     _PRESET_TO_CLI[name] = overrides
     return overrides
 
@@ -271,6 +285,42 @@ def main() -> int:
         choices=("on", "off"),
         default="off",
         help="open_proxy_v1: require breakout persistence (not just width/impulse)",
+    )
+    parser.add_argument(
+        "--alloc-openproxy-enable-orb-selectivity-refinement",
+        choices=("on", "off"),
+        default=("on" if config.ALLOC_OPENPROXY_SELECTIVITY_ENABLED else "off"),
+        help="open_proxy_v1: enable research-only ORB selectivity refinement",
+    )
+    parser.add_argument(
+        "--alloc-openproxy-low-atr-threshold",
+        type=float,
+        default=config.ALLOC_OPENPROXY_LOW_ATR_THRESHOLD,
+        help="open_proxy_v1: low-ATR threshold requiring stronger persistence",
+    )
+    parser.add_argument(
+        "--alloc-openproxy-min-persistence-in-low-atr",
+        type=int,
+        default=config.ALLOC_OPENPROXY_MIN_PERSISTENCE_IN_LOW_ATR,
+        help="open_proxy_v1: minimum persistence required in low-ATR contexts",
+    )
+    parser.add_argument(
+        "--alloc-openproxy-high-impulse-threshold",
+        type=float,
+        default=config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD,
+        help="open_proxy_v1: impulse threshold above which weak persistence blocks ORB routing",
+    )
+    parser.add_argument(
+        "--alloc-openproxy-min-persistence-when-high-impulse",
+        type=int,
+        default=config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE,
+        help="open_proxy_v1: minimum persistence required when impulse exceeds the high-impulse threshold",
+    )
+    parser.add_argument(
+        "--alloc-openproxy-medium-impulse-weak-persistence-filter-enabled",
+        choices=("on", "off"),
+        default=("on" if config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_WEAK_PERSISTENCE_FILTER_ENABLED else "off"),
+        help="open_proxy_v1: enable medium-impulse weak-persistence ORB suppression",
     )
     parser.add_argument(
         "--orb-enabled",
@@ -523,6 +573,12 @@ def main() -> int:
         alloc_openproxy_impulse_atr=float(getattr(args, "alloc_openproxy_impulse_atr", 0.9)),
         alloc_openproxy_persist_bars=max(0, int(getattr(args, "alloc_openproxy_persist_bars", 1))),
         alloc_openproxy_require_break=(getattr(args, "alloc_openproxy_require_break", "off") == "on"),
+        alloc_openproxy_enable_orb_selectivity_refinement=(getattr(args, "alloc_openproxy_enable_orb_selectivity_refinement", "off") == "on"),
+        alloc_openproxy_low_atr_threshold=float(getattr(args, "alloc_openproxy_low_atr_threshold", config.ALLOC_OPENPROXY_LOW_ATR_THRESHOLD)),
+        alloc_openproxy_min_persistence_in_low_atr=max(0, int(getattr(args, "alloc_openproxy_min_persistence_in_low_atr", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_IN_LOW_ATR))),
+        alloc_openproxy_high_impulse_threshold=float(getattr(args, "alloc_openproxy_high_impulse_threshold", config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD)),
+        alloc_openproxy_min_persistence_when_high_impulse=max(0, int(getattr(args, "alloc_openproxy_min_persistence_when_high_impulse", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE))),
+        alloc_openproxy_medium_impulse_weak_persistence_filter_enabled=(getattr(args, "alloc_openproxy_medium_impulse_weak_persistence_filter_enabled", "off") == "on"),
         orb_enabled=(args.orb_enabled == "on"),
         orb_trigger_mode=args.orb_trigger_mode,
         orb_pullback_confirm_bars=max(1, int(args.orb_pullback_confirm_bars)),

@@ -23,6 +23,8 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 
+import config
+
 logger = logging.getLogger(__name__)
 
 
@@ -37,6 +39,12 @@ class OpenProxyConfig:
     impulse_atr_threshold: float = 0.9     # |first 3-bar net move| / ATR >= this → trend signal
     persist_bars: int = 1                  # consecutive closes beyond OR to confirm breakout
     require_break: bool = False            # if True, breakout_persistence must fire (not just width/impulse)
+    enable_orb_selectivity_refinement: bool = config.ALLOC_OPENPROXY_SELECTIVITY_ENABLED
+    orb_selectivity_low_atr_threshold: float = config.ALLOC_OPENPROXY_LOW_ATR_THRESHOLD
+    orb_selectivity_min_persistence_in_low_atr: int = config.ALLOC_OPENPROXY_MIN_PERSISTENCE_IN_LOW_ATR
+    orb_selectivity_high_impulse_threshold: float = config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD
+    orb_selectivity_min_persistence_when_high_impulse: int = config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE
+    enable_medium_impulse_weak_persistence_filter: bool = config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_WEAK_PERSISTENCE_FILTER_ENABLED
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -80,6 +88,18 @@ class OpenProxyDecision:
     trigger_width: bool = False
     trigger_impulse: bool = False
     trigger_persist: bool = False
+    pre_selectivity_decision: str = ""
+    pre_selectivity_reason: str = ""
+    selectivity_refinement_enabled: bool = False
+    selectivity_low_atr_caution: bool = False
+    selectivity_high_impulse_caution: bool = False
+    selectivity_orb_blocked: bool = False
+    selectivity_block_reason: str = ""
+    selectivity_medium_impulse_weak_persistence_caution: bool = False
+    selectivity_v3_orb_blocked: bool = False
+    selectivity_v3_block_reason: str = ""
+    pre_v3_selectivity_decision: str = ""
+    post_v3_selectivity_decision: str = ""
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -208,6 +228,75 @@ def decide(state: OpenWindowState, cfg: OpenProxyConfig) -> OpenProxyDecision:
                 f"+IMPULSE={result.first_3bar_directional_impulse:.2f}"
                 f"+PERSIST={result.persist_bars_observed}"
             )
+
+    result.pre_selectivity_decision = result.decision
+    result.pre_selectivity_reason = result.reason
+    result.selectivity_refinement_enabled = cfg.enable_orb_selectivity_refinement
+
+    if cfg.enable_orb_selectivity_refinement and result.decision == "orb":
+        low_atr_caution = (
+            result.atr_at_decision < cfg.orb_selectivity_low_atr_threshold
+            and result.persist_bars_observed < cfg.orb_selectivity_min_persistence_in_low_atr
+        )
+        high_impulse_caution = (
+            result.first_3bar_directional_impulse >= cfg.orb_selectivity_high_impulse_threshold
+            and result.persist_bars_observed < cfg.orb_selectivity_min_persistence_when_high_impulse
+        )
+        result.selectivity_low_atr_caution = low_atr_caution
+        result.selectivity_high_impulse_caution = high_impulse_caution
+
+        if low_atr_caution or high_impulse_caution:
+            block_reasons: list[str] = []
+            if low_atr_caution:
+                block_reasons.append(
+                    f"LOW_ATR_{result.atr_at_decision:.2f}<"
+                    f"{cfg.orb_selectivity_low_atr_threshold:.2f}_PERSIST_{result.persist_bars_observed}<"
+                    f"{cfg.orb_selectivity_min_persistence_in_low_atr}"
+                )
+            if high_impulse_caution:
+                block_reasons.append(
+                    f"HIGH_IMPULSE_{result.first_3bar_directional_impulse:.2f}>="
+                    f"{cfg.orb_selectivity_high_impulse_threshold:.2f}_PERSIST_{result.persist_bars_observed}<"
+                    f"{cfg.orb_selectivity_min_persistence_when_high_impulse}"
+                )
+            result.selectivity_orb_blocked = True
+            result.selectivity_block_reason = "+".join(block_reasons)
+            result.decision = "mr"
+            result.reason = "OPEN_PROXY_RANGE_SELECTIVITY_" + result.selectivity_block_reason
+
+    result.pre_v3_selectivity_decision = result.decision
+    result.post_v3_selectivity_decision = result.decision
+
+    if result.decision == "orb":
+        medium_band_lower = float(cfg.impulse_atr_threshold)
+        medium_band_upper = float(cfg.orb_selectivity_high_impulse_threshold)
+        medium_impulse_band = (
+            medium_band_upper > medium_band_lower
+            and result.first_3bar_directional_impulse >= medium_band_lower
+            and result.first_3bar_directional_impulse < medium_band_upper
+        )
+        weak_persistence = result.persist_bars_observed == 0
+
+        result.selectivity_medium_impulse_weak_persistence_caution = (
+            cfg.enable_medium_impulse_weak_persistence_filter
+            and medium_impulse_band
+            and weak_persistence
+        )
+        if result.selectivity_medium_impulse_weak_persistence_caution:
+            v3_reason = (
+                "OPEN_PROXY_RANGE_SELECTIVITY_V3_MEDIUM_IMPULSE_WEAK_PERSISTENCE "
+                f"impulse_atr={result.first_3bar_directional_impulse:.2f} "
+                f"band=[{medium_band_lower:.2f},{medium_band_upper:.2f}) "
+                f"persistence={result.persist_bars_observed}"
+            )
+            result.selectivity_v3_orb_blocked = True
+            result.selectivity_v3_block_reason = v3_reason
+            result.selectivity_orb_blocked = True
+            result.selectivity_block_reason = v3_reason
+            result.decision = "mr"
+            result.reason = v3_reason
+
+    result.post_v3_selectivity_decision = result.decision
 
     logger.info(
         "open_proxy_v1 decision=%s reason=%s  "

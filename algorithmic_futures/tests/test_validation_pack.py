@@ -11,6 +11,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 import json
+import csv
 from unittest.mock import patch
 
 import pytest
@@ -46,6 +47,15 @@ class TestLoadPack:
         """load_pack('nonexistent') raises ValueError."""
         with pytest.raises(ValueError, match="nonexistent"):
             load_pack("nonexistent")
+
+    def test_load_pack_historical_holdout_generated(self):
+        """Historical holdout pack resolves to a generated reproducible window."""
+        pack = load_pack("historical_holdout_20d")
+        assert isinstance(pack, ValidationPack)
+        assert pack.pack_id == "historical_holdout_20d"
+        assert len(pack.sessions) == 20
+        assert pack.sessions[0].session_id == "session_20251103"
+        assert pack.sessions[-1].session_id == "session_20251128"
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -235,6 +245,119 @@ class TestRunnerCreatesDirs:
 
         # run_debug_replay should have been called twice
         assert mock_replay.call_count == 2
+
+
+class TestAllocatorDebugArtifact:
+    @patch("dotenv.load_dotenv")
+    @patch("simulation.mr_exit_simulator.DatabentoReplayProvider")
+    @patch("replay_debug.run_debug_replay")
+    def test_runner_stages_allocator_debug_csv(self, mock_replay, mock_provider, mock_dotenv, tmp_path):
+        """Allocator-enabled runs stage one allocator_debug.csv row per session."""
+        pack = _make_minimal_pack()
+
+        def fake_replay(args):
+            import config
+            from pathlib import Path
+            session_dir = Path(config.ARTIFACTS_DIR) / args.session_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+
+            with (session_dir / "signals.csv").open("w", newline="") as fh:
+                writer = csv.DictWriter(fh, fieldnames=["approved", "signal_type"])
+                writer.writeheader()
+                writer.writerow({"approved": "true", "signal_type": "MR"})
+
+            with (session_dir / "trades.csv").open("w", newline="") as fh:
+                writer = csv.DictWriter(
+                    fh,
+                    fieldnames=["trade_id", "session_id", "pnl_dollars", "pnl_r", "entry_timestamp", "exit_timestamp"],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "trade_id": f"{args.session_id}_t1",
+                        "session_id": args.session_id,
+                        "pnl_dollars": "25.0",
+                        "pnl_r": "0.5",
+                        "entry_timestamp": "2026-02-18T14:50:00+00:00",
+                        "exit_timestamp": "2026-02-18T15:00:00+00:00",
+                    }
+                )
+
+            summary = {
+                "session_id": args.session_id,
+                "total_candidates": 1,
+                "total_approved": 1,
+                "total_rejected": 0,
+                "rejection_breakdown": {},
+                "regime_distribution": {"range": 1},
+                "rejection_counters": {"rejected_by_daily_loss_governor": 0, "rejected_by_profit_cap": 0},
+                "orb_funnel": {
+                    "engine_mode": "both",
+                    "allocator_policy": args.allocator_policy,
+                    "allocator_decision": "mr",
+                    "allocator_reason": "OPEN_PROXY_RANGE_SELECTIVITY_V3_MEDIUM_IMPULSE_WEAK_PERSISTENCE impulse_atr=1.00 band=[0.90,2.40) persistence=0",
+                    "open_proxy_diagnostics": {
+                        "or_high": 105.0,
+                        "or_low": 100.0,
+                        "opening_range_width_pts": 5.0,
+                        "opening_range_width_atr": 2.5,
+                        "first_3bar_directional_impulse": 1.0,
+                        "signed_imbalance": 0.8,
+                        "breakout_persistence": True,
+                        "breakout_direction": "UP",
+                        "persist_bars_observed": 1,
+                        "trigger_width": True,
+                        "trigger_impulse": True,
+                        "trigger_persist": True,
+                        "atr_at_decision": 2.0,
+                        "selectivity_refinement_enabled": True,
+                        "selectivity_low_atr_caution": False,
+                        "selectivity_high_impulse_caution": False,
+                        "selectivity_orb_blocked": True,
+                        "selectivity_block_reason": "OPEN_PROXY_RANGE_SELECTIVITY_V3_MEDIUM_IMPULSE_WEAK_PERSISTENCE impulse_atr=1.00 band=[0.90,2.40) persistence=0",
+                        "pre_selectivity_decision": "orb",
+                        "selectivity_medium_impulse_weak_persistence_caution": True,
+                        "selectivity_v3_orb_blocked": True,
+                        "selectivity_v3_block_reason": "OPEN_PROXY_RANGE_SELECTIVITY_V3_MEDIUM_IMPULSE_WEAK_PERSISTENCE impulse_atr=1.00 band=[0.90,2.40) persistence=0",
+                        "pre_v3_selectivity_decision": "orb",
+                        "post_v3_selectivity_decision": "mr",
+                    },
+                },
+            }
+            (session_dir / "session_summary.json").write_text(json.dumps(summary), encoding="utf-8")
+            return 0
+
+        mock_replay.side_effect = fake_replay
+        mock_provider.return_value.replay_trades.return_value = None
+
+        runner = ValidationPackRunner(
+            pack=pack,
+            artifacts_root=str(tmp_path),
+            allocator_policy="open_proxy_v1",
+            engine_mode="both",
+        )
+        runner.run()
+
+        run_dir = next(tmp_path.iterdir())
+        allocator_debug = run_dir / "allocator_debug.csv"
+        assert allocator_debug.exists()
+
+        with allocator_debug.open("r", encoding="utf-8", newline="") as fh:
+            rows = list(csv.DictReader(fh))
+        assert len(rows) == 2
+        assert rows[0]["allocator_policy"] == "open_proxy_v1"
+        assert rows[0]["route"] == "mr"
+        assert rows[0]["width_atr"] == "2.5"
+        assert rows[0]["selectivity_refinement_enabled"] == "True"
+        assert rows[0]["pre_selectivity_decision"] == "orb"
+        assert rows[0]["selectivity_medium_impulse_weak_persistence_caution"] == "True"
+        assert rows[0]["selectivity_v3_orb_blocked"] == "True"
+        assert rows[0]["selectivity_block_reason"] == (
+            "OPEN_PROXY_RANGE_SELECTIVITY_V3_MEDIUM_IMPULSE_WEAK_PERSISTENCE "
+            "impulse_atr=1.00 band=[0.90,2.40) persistence=0"
+        )
+        assert rows[0]["post_v3_selectivity_decision"] == "mr"
+        assert rows[0]["notes"] == rows[0]["selectivity_block_reason"]
 
 
 class TestRunnerHandlesFailure:

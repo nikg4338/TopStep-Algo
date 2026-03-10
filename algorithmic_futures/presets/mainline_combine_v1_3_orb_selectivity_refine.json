@@ -1,0 +1,60 @@
+{
+  "_meta": {
+    "name": "mainline_combine_v1_3_orb_selectivity_refine",
+    "description": "Research candidate that preserves the v1.2 ORB selectivity layer while adding a narrow post-decision filter for medium-impulse weak-persistence ORB conditions.",
+    "parent_preset": "mainline_combine_v1_2_orb_selectivity",
+    "created_date": "2026-03-10",
+    "investigation": "orb_medium_impulse_negative_filter",
+    "hypothesis": "Medium opening-impulse ORB conditions with weak persistence are a false-positive danger zone and should be suppressed."
+  },
+  "allocator": {
+    "policy": "open_proxy_v1",
+    "_note": "v1.3 research candidate. Leaves v1.1 and v1.2 frozen and adds one narrow post-decision ORB filter.",
+    "open_proxy_or_width_atr": 2.2,
+    "open_proxy_impulse_atr": 0.9,
+    "open_proxy_persist_bars": 1,
+    "open_proxy_require_break": false,
+    "enable_orb_selectivity_refinement": true,
+    "orb_selectivity_low_atr_threshold": 10.0,
+    "orb_selectivity_min_persistence_in_low_atr": 2,
+    "orb_selectivity_high_impulse_threshold": 2.4,
+    "orb_selectivity_min_persistence_when_high_impulse": 1,
+    "medium_impulse_weak_persistence_filter_enabled": true
+  },
+  "trend_engine": {
+    "strategy": "orb_pullback_v3",
+    "trigger_mode": "pullback_v3",
+    "orb_minutes": 15,
+    "pullback_v3_max_bars": 3,
+    "pullback_v3_tolerance_pts": 5.0,
+    "pullback_v3_entry_mode": "touch_only",
+    "orb_rr_ratio": 1.5,
+    "orb_stale_cutoff": "11:00",
+    "orb_trades_per_day": 2
+  },
+  "range_engine": {
+    "strategy": "mr_signal_engine",
+    "sigma_entry": 1.4,
+    "sigma_extreme": 2.5,
+    "reclaim_ticks": 0,
+    "cooldown_bars": 1,
+    "max_attempts_per_side": 4,
+    "exit_target_mode": "vwap",
+    "exit_stop_atr_mult": 1.5,
+    "thesis_break_enabled": true
+  },
+  "sizing": {
+    "policy": "dynamic_v3",
+    "variant": "orb_start",
+    "v3_earned_traction": 75.0,
+    "v3_giveback_floor": 25.0,
+    "v3_orb_upsize_allowed": true,
+    "v3_day_headroom_up": 800.0,
+    "v3_day_headroom_down": 600.0,
+    "v3_trail_headroom_up": 1400.0,
+    "v3_trail_headroom_down": 1200.0,
+    "profit_lock": 2000.0,
+    "daily_loss_limit": 1000.0,
+    "trail_dd_limit": 2000.0
+  }
+}
