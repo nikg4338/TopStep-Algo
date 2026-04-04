@@ -45,6 +45,12 @@ class OpenProxyConfig:
     orb_selectivity_high_impulse_threshold: float = config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD
     orb_selectivity_min_persistence_when_high_impulse: int = config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE
     enable_medium_impulse_weak_persistence_filter: bool = config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_WEAK_PERSISTENCE_FILTER_ENABLED
+    enable_medium_impulse_decay_filter: bool = config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_DECAY_FILTER_ENABLED
+    medium_impulse_min_atr: float = config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_ATR
+    medium_impulse_max_atr: float = config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX_ATR
+    medium_impulse_min: float = config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN
+    medium_impulse_max: float = config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX
+    medium_impulse_min_persistence: int = config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_PERSISTENCE
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -96,6 +102,7 @@ class OpenProxyDecision:
     selectivity_orb_blocked: bool = False
     selectivity_block_reason: str = ""
     selectivity_medium_impulse_weak_persistence_caution: bool = False
+    selectivity_medium_impulse_decay_caution: bool = False
     selectivity_v3_orb_blocked: bool = False
     selectivity_v3_block_reason: str = ""
     pre_v3_selectivity_decision: str = ""
@@ -266,6 +273,33 @@ def decide(state: OpenWindowState, cfg: OpenProxyConfig) -> OpenProxyDecision:
 
     result.pre_v3_selectivity_decision = result.decision
     result.post_v3_selectivity_decision = result.decision
+
+    if result.decision == "orb":
+        medium_decay_band = (
+            cfg.enable_medium_impulse_decay_filter
+            and result.atr_at_decision >= cfg.medium_impulse_min_atr
+            and result.atr_at_decision < cfg.medium_impulse_max_atr
+            and result.first_3bar_directional_impulse >= cfg.medium_impulse_min
+            and result.first_3bar_directional_impulse < cfg.medium_impulse_max
+            and result.persist_bars_observed < cfg.medium_impulse_min_persistence
+        )
+        result.selectivity_medium_impulse_decay_caution = medium_decay_band
+        if medium_decay_band:
+            decay_reason = (
+                "OPEN_PROXY_RANGE_SELECTIVITY_V4_MEDIUM_IMPULSE_DECAY "
+                f"impulse_atr={result.first_3bar_directional_impulse:.2f} "
+                f"atr={result.atr_at_decision:.2f} "
+                f"persistence={result.persist_bars_observed}<"
+                f"{cfg.medium_impulse_min_persistence} "
+                f"atr_band=[{cfg.medium_impulse_min_atr:.2f},{cfg.medium_impulse_max_atr:.2f}) "
+                f"impulse_band=[{cfg.medium_impulse_min:.2f},{cfg.medium_impulse_max:.2f})"
+            )
+            result.selectivity_v3_orb_blocked = True
+            result.selectivity_v3_block_reason = decay_reason
+            result.selectivity_orb_blocked = True
+            result.selectivity_block_reason = decay_reason
+            result.decision = "mr"
+            result.reason = decay_reason
 
     if result.decision == "orb":
         medium_band_lower = float(cfg.impulse_atr_threshold)

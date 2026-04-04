@@ -30,6 +30,12 @@ ALLOC_OPENPROXY_MIN_PERSISTENCE_IN_LOW_ATR: int = 2
 ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD: float = 2.4
 ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE: int = 1
 ALLOC_OPENPROXY_MEDIUM_IMPULSE_WEAK_PERSISTENCE_FILTER_ENABLED: bool = False
+ALLOC_OPENPROXY_MEDIUM_IMPULSE_DECAY_FILTER_ENABLED: bool = False
+ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_ATR: float = 8.0
+ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX_ATR: float = 15.0
+ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN: float = 0.9
+ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX: float = 2.0
+ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_PERSISTENCE: int = 2
 
 # ── Execution Mode ──────────────────────────────────────────────────────
 # "projectx_native"  — use ProjectX OCO / native CVD when available
@@ -62,6 +68,15 @@ CONSISTENCY_CAP: dict[str, float] = {
 RISK_PER_TRADE_MIN: int = 20             # 1 % of MLL
 RISK_PER_TRADE_MAX: int = 40             # 2 % of MLL
 RISK_PER_TRADE: int     = 20             # Default starting risk
+
+# Dynamic v3 sizing refinements (research-only; disabled by default)
+DYN_V3_ATR_TRACTION_SCALE_ENABLED: bool = False
+DYN_V3_ATR_TRACTION_BASELINE: float = 12.0
+DYN_V3_ATR_TRACTION_MIN_SCALE: float = 0.75
+DYN_V3_ATR_TRACTION_MAX_SCALE: float = 1.25
+DYN_V3_CONSISTENCY_BRAKE_ENABLED: bool = False
+DYN_V3_CONSISTENCY_CAP_PCT: float = 0.50
+DYN_V3_CONSISTENCY_LOSS_BUFFER_MULT: float = 2.0
 
 # ── Instrument ──────────────────────────────────────────────────────────
 INSTRUMENT: str     = "MES"

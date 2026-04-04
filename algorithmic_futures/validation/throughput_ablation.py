@@ -61,6 +61,7 @@ def run_throughput_ablation(
     pack_name: str,
     artifacts_root: str,
     continue_on_error: bool,
+    mr_sigma_entry: float,
     mr_soft_range_impulse_k: float,
 ) -> list[tuple[str, str]]:
     pack = load_pack(pack_name)
@@ -83,6 +84,7 @@ def run_throughput_ablation(
             artifacts_root=artifacts_root,
             continue_on_error=continue_on_error,
             mr_reclaim_mode="off",
+            mr_sigma_entry=mr_sigma_entry,
             mr_soft_impulse_k=mr_soft_range_impulse_k,
             mr_dedupe_enabled=dedupe_enabled,
             mr_attempt_cap_enabled=attempt_enabled,
@@ -98,6 +100,7 @@ def run_throughput_ablation(
             "run_id": manifest.run_id,
             "run_dir": str(run_dir),
             "controls": {
+                "mr_sigma_entry": mr_sigma_entry,
                 "mr_reclaim_mode": "off",
                 "dedupe_enabled": dedupe_enabled,
                 "attempt_cap_enabled": attempt_enabled,
@@ -131,6 +134,7 @@ def main() -> int:
     parser.add_argument("--pack", required=True)
     parser.add_argument("--artifacts-root", default="artifacts/validation_runs")
     parser.add_argument("--no-continue-on-error", action="store_true")
+    parser.add_argument("--mr-sigma-entry", type=float, default=1.4)
     parser.add_argument("--mr-soft-range-impulse-k", type=float, default=1.2)
     args = parser.parse_args()
 
@@ -138,6 +142,7 @@ def main() -> int:
         pack_name=args.pack,
         artifacts_root=args.artifacts_root,
         continue_on_error=not args.no_continue_on_error,
+        mr_sigma_entry=float(args.mr_sigma_entry),
         mr_soft_range_impulse_k=float(args.mr_soft_range_impulse_k),
     )
     return 0

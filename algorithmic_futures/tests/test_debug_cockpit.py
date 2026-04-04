@@ -312,6 +312,23 @@ class TestMRSignalEngine:
         assert loose_sig is not None
         assert loose_sig.side == "BUY"
 
+    def test_sigma_entry_is_tunable(self) -> None:
+        """Lower sigma entry should emit sooner than the default threshold."""
+        base = MRSignalEngine(reclaim_mode="off")
+        loose = MRSignalEngine(reclaim_mode="off", sigma_entry=1.2)
+        vs = VWAPState(bar_count=20, vwap=5800.0, std_dev=5.0)
+
+        inside_bar = _make_bar(datetime(2025, 2, 18, 10, 30), close=5794.3)
+        candidate_bar = _make_bar(datetime(2025, 2, 18, 10, 35), high=5794.2, low=5793.6, close=5793.9)
+
+        assert base.on_bar(inside_bar, "range", vs, atr=2.0) is None
+        assert loose.on_bar(inside_bar, "range", vs, atr=2.0) is None
+
+        assert base.on_bar(candidate_bar, "range", vs, atr=2.0) is None
+        loose_sig = loose.on_bar(candidate_bar, "range", vs, atr=2.0)
+        assert loose_sig is not None
+        assert loose_sig.side == "BUY"
+
     def test_gate_funnel_includes_accounting_fields(self) -> None:
         """Gate funnel report carries bars/crosses/mode accounting fields."""
         engine = MRSignalEngine(reclaim_mode="off")

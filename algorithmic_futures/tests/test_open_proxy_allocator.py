@@ -279,4 +279,59 @@ def test_open_proxy_v3_does_not_block_high_impulse_with_persistence():
         ),
     )
     assert result.decision == "orb"
+
+
+def test_open_proxy_v4_blocks_medium_impulse_decay_band():
+    state = _state(
+        bars=[(100, 103, 99, 102), (102, 104, 101, 103), (103, 105, 102, 104)],
+        or_high=105,
+        or_low=99,
+        first_bar_open=100,
+        atr=9.0,
+        post_or_bars=[(104, 105, 103.5, 104.2)],
+    )
+    result = decide(
+        state,
+        OpenProxyConfig(
+            or_width_atr_threshold=10.0,
+            impulse_atr_threshold=0.2,
+            enable_orb_selectivity_refinement=True,
+            orb_selectivity_low_atr_threshold=5.0,
+            orb_selectivity_high_impulse_threshold=2.4,
+            enable_medium_impulse_decay_filter=True,
+            medium_impulse_min_atr=8.0,
+            medium_impulse_max_atr=15.0,
+            medium_impulse_min=0.2,
+            medium_impulse_max=2.0,
+            medium_impulse_min_persistence=2,
+        ),
+    )
+    assert result.pre_v3_selectivity_decision == "orb"
+    assert result.decision == "mr"
+    assert result.selectivity_medium_impulse_decay_caution is True
+    assert "OPEN_PROXY_RANGE_SELECTIVITY_V4_MEDIUM_IMPULSE_DECAY" in result.reason
+
+
+def test_open_proxy_v4_disabled_keeps_orb_decision():
+    state = _state(
+        bars=[(100, 103, 99, 102), (102, 104, 101, 103), (103, 105, 102, 104)],
+        or_high=105,
+        or_low=99,
+        first_bar_open=100,
+        atr=9.0,
+        post_or_bars=[(104, 105, 103.5, 104.2)],
+    )
+    result = decide(
+        state,
+        OpenProxyConfig(
+            or_width_atr_threshold=10.0,
+            impulse_atr_threshold=0.2,
+            enable_orb_selectivity_refinement=True,
+            orb_selectivity_low_atr_threshold=5.0,
+            orb_selectivity_high_impulse_threshold=2.4,
+            enable_medium_impulse_decay_filter=False,
+        ),
+    )
+    assert result.decision == "orb"
+    assert result.selectivity_medium_impulse_decay_caution is False
     assert result.selectivity_v3_orb_blocked is False

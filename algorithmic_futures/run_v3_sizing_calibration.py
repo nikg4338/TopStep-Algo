@@ -2,20 +2,22 @@
 """
 run_v3_sizing_calibration.py — Dynamic v3 sizing calibration experiment.
 
-6-arm comparison via 100-draw stratified robustness:
-  1. fixed_1c             — baseline
-  2. fixed_2c             — ceiling
-  3. dynamic_v3_50_25     — traction=$50, giveback=$25
-  4. dynamic_v3_75_25     — traction=$75, giveback=$25
-  5. dynamic_v3_100_25    — traction=$100, giveback=$25
-  6. dynamic_v3_orb_start — traction=$75, giveback=$25, orb_upsize=True
+Default 6-arm comparison via stratified robustness:
+    1. fixed_1c             — baseline
+    2. fixed_2c             — ceiling
+    3. dynamic_v3_50_25     — traction=$50, giveback=$25
+    4. dynamic_v3_75_25     — traction=$75, giveback=$25
+    5. dynamic_v3_100_25    — traction=$100, giveback=$25
+    6. dynamic_v3_orb_start — traction=$75, giveback=$25, orb_upsize=True
 
 Reuses the base-run session pool from the pb3 evaluation step.
 
 Usage:
-    python run_v3_sizing_calibration.py
-    python run_v3_sizing_calibration.py --base-run-ids <id1> <id2> ...
-    python run_v3_sizing_calibration.py --n-draws 50 --draw-size 21
+        python run_v3_sizing_calibration.py
+        python run_v3_sizing_calibration.py --base-run-ids <id1> <id2> ...
+        python run_v3_sizing_calibration.py --n-draws 50 --draw-size 21
+        python run_v3_sizing_calibration.py --dynamic-v3-tractions 40 50 60 75 100
+        python run_v3_sizing_calibration.py --dynamic-v3-tractions 40 50 60 75 100 --include-orb-start-arm
 """
 
 from __future__ import annotations
@@ -53,7 +55,7 @@ ARTIFACTS_ROOT = Path("artifacts/validation_runs")
 
 MC_KEYS = [
     "p_target_before_ruin", "p_ruin", "p_daily_loss_breach",
-    "dd_p95", "equity_p50", "equity_p10",
+    "dd_p95", "equity_p50", "equity_p10", "losing_streak_p95",
 ]
 
 # ── Sizing arms ────────────────────────────────────────────────────────
@@ -65,6 +67,46 @@ SIZING_ARMS = [
     "dynamic_v3_100_25",
     "dynamic_v3_orb_start",
 ]
+
+DEFAULT_DYNAMIC_V3_GIVEBACK = 25.0
+DEFAULT_ORB_START_TRACTION = 75.0
+
+
+def _format_threshold_token(value: float) -> str:
+    if float(value).is_integer():
+        return str(int(value))
+    return f"{value:g}".replace(".", "p")
+
+
+def _build_dynamic_v3_arm(traction: float, giveback: float) -> str:
+    return (
+        f"dynamic_v3_{_format_threshold_token(traction)}"
+        f"_{_format_threshold_token(giveback)}"
+    )
+
+
+def resolve_sizing_arms(args: argparse.Namespace) -> list[str]:
+    if args.arms:
+        return args.arms
+
+    if not args.dynamic_v3_tractions:
+        return SIZING_ARMS
+
+    arms = list(args.fixed_arms)
+    for traction in args.dynamic_v3_tractions:
+        arms.append(_build_dynamic_v3_arm(traction, args.dynamic_v3_giveback))
+
+    if args.include_orb_start_arm:
+        orb_token = _build_dynamic_v3_arm(args.orb_start_traction, args.dynamic_v3_giveback)
+        arms.append(f"{orb_token}_orb_start")
+
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for arm in arms:
+        if arm not in seen:
+            deduped.append(arm)
+            seen.add(arm)
+    return deduped
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -251,35 +293,49 @@ def stratified_draw(
 
 def _make_sizing_config(arm: str):
     from validation.sizing_policy import SizingConfig
-    base = dict(
-        daily_loss_limit=float(config.DAILY_LOSS_LIMIT_EXTERNAL),
-        trail_dd_limit=float(config.MAX_LOSS_LIMIT),
-    )
+    daily_loss_limit = float(config.DAILY_LOSS_LIMIT_EXTERNAL)
+    trail_dd_limit = float(config.MAX_LOSS_LIMIT)
     if arm == "fixed_1c":
-        return SizingConfig(policy="fixed", fixed_contracts=1, **base)
+        return SizingConfig(
+            policy="fixed",
+            fixed_contracts=1,
+            daily_loss_limit=daily_loss_limit,
+            trail_dd_limit=trail_dd_limit,
+        )
     elif arm == "fixed_2c":
-        return SizingConfig(policy="fixed", fixed_contracts=2, **base)
+        return SizingConfig(
+            policy="fixed",
+            fixed_contracts=2,
+            daily_loss_limit=daily_loss_limit,
+            trail_dd_limit=trail_dd_limit,
+        )
     elif arm.startswith("dynamic_v3"):
-        # Parse arm name: dynamic_v3_<traction>_<giveback> or dynamic_v3_orb_start
+        # Parse arm name: dynamic_v3_<traction>_<giveback>[_orb_start]
         if arm == "dynamic_v3_orb_start":
             return SizingConfig(
                 policy="dynamic_v3",
-                v3_earned_traction=75.0,
-                v3_giveback_floor=25.0,
+                v3_earned_traction=DEFAULT_ORB_START_TRACTION,
+                v3_giveback_floor=DEFAULT_DYNAMIC_V3_GIVEBACK,
                 v3_orb_upsize_allowed=True,
-                **base,
+                daily_loss_limit=daily_loss_limit,
+                trail_dd_limit=trail_dd_limit,
             )
         else:
-            # e.g. dynamic_v3_50_25
+            # e.g. dynamic_v3_50_25 or dynamic_v3_75_25_orb_start
             parts = arm.split("_")
-            traction = float(parts[2])
-            giveback = float(parts[3])
+            if len(parts) < 4:
+                raise ValueError(f"Invalid dynamic_v3 arm: {arm}")
+
+            traction = float(parts[2].replace("p", "."))
+            giveback = float(parts[3].replace("p", "."))
+            orb_upsize_allowed = len(parts) > 4 and parts[4:] == ["orb", "start"]
             return SizingConfig(
                 policy="dynamic_v3",
                 v3_earned_traction=traction,
                 v3_giveback_floor=giveback,
-                v3_orb_upsize_allowed=False,
-                **base,
+                v3_orb_upsize_allowed=orb_upsize_allowed,
+                daily_loss_limit=daily_loss_limit,
+                trail_dd_limit=trail_dd_limit,
             )
     else:
         raise ValueError(f"Unknown arm: {arm}")
@@ -433,6 +489,171 @@ def aggregate_draw_results(draws: list[dict]) -> dict[str, dict[str, dict]]:
     return agg
 
 
+def _stat_mean(stats: dict[str, dict[str, float]], metric: str) -> float:
+    return float(stats.get(metric, {}).get("mean", 0.0) or 0.0)
+
+
+def build_promotion_ranking(aggregate: dict[str, dict[str, dict]]) -> list[dict[str, Any]]:
+    ranking: list[dict[str, Any]] = []
+    for arm, stats in aggregate.items():
+        p_target_mean = _stat_mean(stats, "p_target_before_ruin")
+        p_ruin_mean = _stat_mean(stats, "p_ruin")
+        dd_p95_mean = _stat_mean(stats, "dd_p95")
+        losing_streak_mean = _stat_mean(stats, "losing_streak_p95")
+        equity_p50_mean = _stat_mean(stats, "equity_p50")
+        trade_count_mean = _stat_mean(stats, "trade_count")
+
+        checks = {
+            "mc_target_prob": p_target_mean >= float(config.MC_TARGET_THRESHOLD),
+            "mc_ruin_prob": p_ruin_mean <= float(config.MC_RUIN_THRESHOLD),
+            "mc_dd_p95": dd_p95_mean <= float(config.PROMOTION_MC_MAX_DD_P95),
+            "mc_losing_streak_p95": losing_streak_mean < float(config.MC_LOSING_STREAK_P95_MAX),
+            "min_trade_count": trade_count_mean >= float(config.MC_PROFILE_MIN_TRADE_COUNT),
+        }
+        failed_checks = [name for name, passed in checks.items() if not passed]
+        ranking.append(
+            {
+                "arm": arm,
+                "promotion_pass": len(failed_checks) == 0,
+                "failed_checks": failed_checks,
+                "checks": checks,
+                "p_target_before_ruin_mean": round(p_target_mean, 6),
+                "p_ruin_mean": round(p_ruin_mean, 6),
+                "dd_p95_mean": round(dd_p95_mean, 6),
+                "losing_streak_p95_mean": round(losing_streak_mean, 6),
+                "equity_p50_mean": round(equity_p50_mean, 6),
+                "trade_count_mean": round(trade_count_mean, 6),
+            }
+        )
+
+    ranking.sort(
+        key=lambda row: (
+            not row["promotion_pass"],
+            len(row["failed_checks"]),
+            -row["p_target_before_ruin_mean"],
+            row["p_ruin_mean"],
+            row["dd_p95_mean"],
+            row["losing_streak_p95_mean"],
+            -row["equity_p50_mean"],
+            -row["trade_count_mean"],
+        )
+    )
+    for idx, row in enumerate(ranking, 1):
+        row["rank"] = idx
+    return ranking
+
+
+def _positive_shortfall(actual: float, threshold: float, *, higher_is_better: bool) -> float:
+    if higher_is_better:
+        return round(max(0.0, threshold - actual), 6)
+    return round(max(0.0, actual - threshold), 6)
+
+
+def _classify_tightening_row(
+    dd_delta: float,
+    streak_delta: float,
+    target_delta: float,
+    ruin_delta: float,
+) -> str:
+    if dd_delta > 0 or streak_delta > 0 or ruin_delta > 0:
+        return "risk_regression"
+    if target_delta > 0:
+        return "promotion_progress"
+    if dd_delta < 0 or streak_delta < 0 or ruin_delta < 0:
+        return "engineering_progress"
+    return "mixed"
+
+
+def build_tightening_ranking(
+    aggregate: dict[str, dict[str, dict]],
+    reference_arm: str,
+) -> list[dict[str, Any]]:
+    reference_stats = aggregate.get(reference_arm)
+    if reference_stats is None:
+        raise ValueError(f"reference arm '{reference_arm}' was not found in aggregate results")
+
+    ref_p_target = _stat_mean(reference_stats, "p_target_before_ruin")
+    ref_p_ruin = _stat_mean(reference_stats, "p_ruin")
+    ref_dd_p95 = _stat_mean(reference_stats, "dd_p95")
+    ref_losing_streak = _stat_mean(reference_stats, "losing_streak_p95")
+    ref_equity_p50 = _stat_mean(reference_stats, "equity_p50")
+    ref_trade_count = _stat_mean(reference_stats, "trade_count")
+
+    ranking: list[dict[str, Any]] = []
+    for arm, stats in aggregate.items():
+        if arm == reference_arm:
+            continue
+
+        p_target_mean = _stat_mean(stats, "p_target_before_ruin")
+        p_ruin_mean = _stat_mean(stats, "p_ruin")
+        dd_p95_mean = _stat_mean(stats, "dd_p95")
+        losing_streak_mean = _stat_mean(stats, "losing_streak_p95")
+        equity_p50_mean = _stat_mean(stats, "equity_p50")
+        trade_count_mean = _stat_mean(stats, "trade_count")
+
+        dd_delta = round(dd_p95_mean - ref_dd_p95, 6)
+        streak_delta = round(losing_streak_mean - ref_losing_streak, 6)
+        target_delta = round(p_target_mean - ref_p_target, 6)
+        ruin_delta = round(p_ruin_mean - ref_p_ruin, 6)
+        equity_delta = round(equity_p50_mean - ref_equity_p50, 6)
+        trade_count_delta = round(trade_count_mean - ref_trade_count, 6)
+
+        dd_shortfall = _positive_shortfall(dd_p95_mean, float(config.PROMOTION_MC_MAX_DD_P95), higher_is_better=False)
+        streak_shortfall = _positive_shortfall(losing_streak_mean, float(config.MC_LOSING_STREAK_P95_MAX), higher_is_better=False)
+        target_shortfall = _positive_shortfall(p_target_mean, float(config.MC_TARGET_THRESHOLD), higher_is_better=True)
+        tightening_classification = _classify_tightening_row(dd_delta, streak_delta, target_delta, ruin_delta)
+
+        ranking.append(
+            {
+                "arm": arm,
+                "reference_arm": reference_arm,
+                "classification": tightening_classification,
+                "dd_p95_mean": round(dd_p95_mean, 6),
+                "losing_streak_p95_mean": round(losing_streak_mean, 6),
+                "p_target_before_ruin_mean": round(p_target_mean, 6),
+                "p_ruin_mean": round(p_ruin_mean, 6),
+                "equity_p50_mean": round(equity_p50_mean, 6),
+                "trade_count_mean": round(trade_count_mean, 6),
+                "dd_p95_delta": dd_delta,
+                "losing_streak_p95_delta": streak_delta,
+                "p_target_before_ruin_delta": target_delta,
+                "p_ruin_delta": ruin_delta,
+                "equity_p50_delta": equity_delta,
+                "trade_count_delta": trade_count_delta,
+                "dd_p95_shortfall": dd_shortfall,
+                "losing_streak_p95_shortfall": streak_shortfall,
+                "p_target_before_ruin_shortfall": target_shortfall,
+                "clears_dd_gate": dd_shortfall == 0.0,
+                "clears_losing_streak_gate": streak_shortfall == 0.0,
+                "clears_target_gate": target_shortfall == 0.0,
+            }
+        )
+
+    classification_order = {
+        "promotion_progress": 0,
+        "engineering_progress": 1,
+        "mixed": 2,
+        "risk_regression": 3,
+    }
+    ranking.sort(
+        key=lambda row: (
+            classification_order.get(row["classification"], 99),
+            row["dd_p95_shortfall"],
+            row["losing_streak_p95_shortfall"],
+            row["p_target_before_ruin_shortfall"],
+            -row["p_target_before_ruin_delta"],
+            row["p_ruin_delta"],
+            row["dd_p95_delta"],
+            row["losing_streak_p95_delta"],
+            -row["equity_p50_delta"],
+            -row["trade_count_delta"],
+        )
+    )
+    for idx, row in enumerate(ranking, 1):
+        row["tightening_rank"] = idx
+    return ranking
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  Main
 # ═══════════════════════════════════════════════════════════════════════
@@ -452,9 +673,21 @@ def main() -> int:
                         help="RNG seed for reproducibility")
     parser.add_argument("--arms", nargs="+", default=None,
                         help="Override arm list (default: all 6)")
+    parser.add_argument("--dynamic-v3-tractions", nargs="+", type=float, default=None,
+                        help="Build dynamic_v3_<traction>_<giveback> arms from these traction thresholds")
+    parser.add_argument("--dynamic-v3-giveback", type=float, default=DEFAULT_DYNAMIC_V3_GIVEBACK,
+                        help="Giveback floor used with --dynamic-v3-tractions (default: 25)")
+    parser.add_argument("--fixed-arms", nargs="+", default=["fixed_1c", "fixed_2c"],
+                        help="Fixed-policy arms to keep when using --dynamic-v3-tractions")
+    parser.add_argument("--include-orb-start-arm", action="store_true",
+                        help="Add a dynamic_v3_<traction>_<giveback>_orb_start arm to the generated sweep")
+    parser.add_argument("--orb-start-traction", type=float, default=DEFAULT_ORB_START_TRACTION,
+                        help="Traction threshold used for the generated orb-start arm (default: 75)")
+    parser.add_argument("--reference-arm", default=None,
+                        help="Optional arm to compare against in a tightening-oriented delta summary")
     args = parser.parse_args()
 
-    arms = args.arms or SIZING_ARMS
+    arms = resolve_sizing_arms(args)
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
     t_global = time.monotonic()
 
@@ -510,6 +743,10 @@ def main() -> int:
                 print(f"    [{done}/{total_combos}] {elapsed:.0f}s elapsed, ~{eta:.0f}s remaining")
 
     aggregate = aggregate_draw_results(all_draw_results)
+    promotion_ranking = build_promotion_ranking(aggregate)
+    tightening_ranking: list[dict[str, Any]] = []
+    if args.reference_arm:
+        tightening_ranking = build_tightening_ranking(aggregate, args.reference_arm)
 
     # ── Print summary ───────────────────────────────────────────────────
     print(f"\n{'═'*110}")
@@ -541,6 +778,44 @@ def main() -> int:
             f"${eq50.get('mean', 0):>8,.0f} "
             f"${eq10.get('mean', 0):>8,.0f}"
         )
+
+    print(f"\n{'─'*130}")
+    print("  PROMOTION-CONSTRAINED ARM RANKING")
+    print(f"{'─'*130}")
+    print(f"  {'Rank':>4} {'Arm':<28} {'Pass':>5} {'P_hit':>8} {'P_ruin':>8} {'DD95':>8} {'Streak':>8} {'Eq50':>9} {'Failed checks':<40}")
+    print(f"{'─'*130}")
+    for row in promotion_ranking:
+        failed = ",".join(row["failed_checks"]) if row["failed_checks"] else "-"
+        print(
+            f"  {row['rank']:>4} {row['arm']:<28} "
+            f"{('yes' if row['promotion_pass'] else 'no'):>5} "
+            f"{row['p_target_before_ruin_mean']:>8.3f} "
+            f"{row['p_ruin_mean']:>8.4f} "
+            f"{row['dd_p95_mean']:>8.0f} "
+            f"{row['losing_streak_p95_mean']:>8.1f} "
+            f"{row['equity_p50_mean']:>9.0f} "
+            f"{failed:<40}"
+        )
+
+    if args.reference_arm:
+        print(f"\n{'─'*148}")
+        print(f"  TIGHTENING DELTAS VS {args.reference_arm}")
+        print(f"{'─'*148}")
+        print(
+            f"  {'Rank':>4} {'Arm':<28} {'Class':<22} {'DDΔ':>8} {'StreakΔ':>9} {'P_hitΔ':>9} {'RuinΔ':>8} {'DD gap':>8} {'Streak gap':>11} {'P_hit gap':>10}"
+        )
+        print(f"{'─'*148}")
+        for row in tightening_ranking:
+            print(
+                f"  {row['tightening_rank']:>4} {row['arm']:<28} {row['classification']:<22} "
+                f"{row['dd_p95_delta']:>8.0f} "
+                f"{row['losing_streak_p95_delta']:>9.1f} "
+                f"{row['p_target_before_ruin_delta']:>9.3f} "
+                f"{row['p_ruin_delta']:>8.4f} "
+                f"{row['dd_p95_shortfall']:>8.0f} "
+                f"{row['losing_streak_p95_shortfall']:>11.1f} "
+                f"{row['p_target_before_ruin_shortfall']:>10.3f}"
+            )
 
     # ── v3 activation diagnostics ───────────────────────────────────────
     print(f"\n{'─'*130}")
@@ -578,6 +853,13 @@ def main() -> int:
         "generated": datetime.now(timezone.utc).isoformat(),
         "experiment": "v3_sizing_calibration",
         "arms": arms,
+        "arm_generation": {
+            "fixed_arms": args.fixed_arms,
+            "dynamic_v3_tractions": args.dynamic_v3_tractions,
+            "dynamic_v3_giveback": args.dynamic_v3_giveback,
+            "include_orb_start_arm": args.include_orb_start_arm,
+            "orb_start_traction": args.orb_start_traction,
+        },
         "base_run_ids": args.base_run_ids,
         "n_draws": args.n_draws,
         "draw_size": args.draw_size,
@@ -592,6 +874,10 @@ def main() -> int:
             for label in ("range", "mixed", "trend")
         },
         "aggregate": aggregate,
+        "promotion_ranking": promotion_ranking,
+        "reference_arm": args.reference_arm,
+        "tightening_ranking": tightening_ranking,
+        "best_arm_under_constraints": promotion_ranking[0]["arm"] if promotion_ranking else None,
         "total_runtime_seconds": round(total_elapsed, 1),
     }
 
@@ -615,6 +901,7 @@ def main() -> int:
             "dd_p95_mean": round(astats.get("dd_p95", {}).get("mean", 0), 0),
             "eq_p50_mean": round(astats.get("equity_p50", {}).get("mean", 0), 0),
             "eq_p10_mean": round(astats.get("equity_p10", {}).get("mean", 0), 0),
+            "losing_streak_p95_mean": round(astats.get("losing_streak_p95", {}).get("mean", 0), 2),
             "days_started_2c": round(astats.get("days_started_2c", {}).get("mean", 0), 1),
             "days_ever_2c": round(astats.get("days_ever_2c", {}).get("mean", 0), 1),
             "trades_at_2c": round(astats.get("trades_at_2c", {}).get("mean", 0), 1),
@@ -625,6 +912,25 @@ def main() -> int:
             "v3_orb_sessions": round(astats.get("v3_orb_sessions", {}).get("mean", 0), 1),
             "downshifts": round(astats.get("intraday_downshifts", {}).get("mean", 0), 1),
         })
+
+    ranking_by_arm = {row["arm"]: row for row in promotion_ranking}
+    tightening_by_arm = {row["arm"]: row for row in tightening_ranking}
+    for row in csv_rows:
+        ranking = ranking_by_arm.get(row["arm"], {})
+        row["promotion_rank"] = ranking.get("rank", 0)
+        row["promotion_pass"] = ranking.get("promotion_pass", False)
+        row["promotion_failed_checks"] = ",".join(ranking.get("failed_checks", []))
+        tightening = tightening_by_arm.get(row["arm"], {})
+        row["reference_arm"] = args.reference_arm or ""
+        row["tightening_rank"] = tightening.get("tightening_rank", 0)
+        row["tightening_classification"] = tightening.get("classification", "")
+        row["dd_p95_delta"] = round(float(tightening.get("dd_p95_delta", 0.0) or 0.0), 2)
+        row["losing_streak_p95_delta"] = round(float(tightening.get("losing_streak_p95_delta", 0.0) or 0.0), 2)
+        row["p_target_before_ruin_delta"] = round(float(tightening.get("p_target_before_ruin_delta", 0.0) or 0.0), 4)
+        row["p_ruin_delta"] = round(float(tightening.get("p_ruin_delta", 0.0) or 0.0), 4)
+        row["dd_p95_shortfall"] = round(float(tightening.get("dd_p95_shortfall", 0.0) or 0.0), 2)
+        row["losing_streak_p95_shortfall"] = round(float(tightening.get("losing_streak_p95_shortfall", 0.0) or 0.0), 2)
+        row["p_target_before_ruin_shortfall"] = round(float(tightening.get("p_target_before_ruin_shortfall", 0.0) or 0.0), 4)
 
     if csv_rows:
         fieldnames = list(csv_rows[0].keys())

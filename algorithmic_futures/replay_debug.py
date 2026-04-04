@@ -75,6 +75,7 @@ def _build_parser() -> argparse.ArgumentParser:
     p.add_argument("--update-every", type=int, default=200, help="Chart refresh interval (ticks)")
     p.add_argument("--pause", type=float, default=0.001, help="Matplotlib pause per update")
     p.add_argument("--no-show", action="store_true", help="Headless mode (no window)")
+    p.add_argument("--no-dashboard", action="store_true", help="Skip dashboard rendering for batch runs")
     p.add_argument("--save-path", default="", help="Save final chart image to path")
     p.add_argument(
         "--session-id",
@@ -87,6 +88,12 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=("on", "off", "soft", "touch"),
         default="on",
         help="MR candidate mode: 'on' requires reclaim, 'off' threshold-cross, 'soft' threshold-cross + light momentum confirm",
+    )
+    p.add_argument(
+        "--mr-sigma-entry",
+        type=float,
+        default=config.MR_SIGMA_ENTRY,
+        help="MR entry threshold in z-score units",
     )
     p.add_argument(
         "--mr-soft-range-impulse-k",
@@ -383,9 +390,11 @@ def _print_signal_diagnostic(
     bars_closed: int,
     warmup_bars: int,
     orb_tracker: "_ORBTracker",
+    mr_sigma_entry: float,
+    mr_cooldown_bars: int,
 ) -> None:
     """Print a per-session diagnostic explaining *why* signals did/didn't fire."""
-    from config import MR_SIGMA_ENTRY, MR_SIGMA_EXTREME, MR_COOLDOWN_BARS, TIMEZONE
+    from config import TIMEZONE
 
     et = pytz.timezone(TIMEZONE)
 
@@ -425,7 +434,7 @@ def _print_signal_diagnostic(
         print(f"  Band touches ≥ 2.0σ      : {touch_2_0}")
         print(f"  Band touches ≥ 2.5σ      : {touch_2_5}")
         print(f"  Band touches ≥ 3.0σ      : {touch_3_0}")
-        print(f"  Current σ entry threshold: {MR_SIGMA_ENTRY}")
+        print(f"  Current σ entry threshold: {mr_sigma_entry}")
     else:
         print("  Peak |z-score|           : N/A (no bars with σ)")
 
@@ -450,7 +459,7 @@ def _print_signal_diagnostic(
         print(f"  ADX                      : 0.0 (never fired — need {warmup_bars * 2}+ bars for period-{warmup_bars} ADX)")
 
     # Cooldown info
-    print(f"  Cooldown bars            : {MR_COOLDOWN_BARS}")
+    print(f"  Cooldown bars            : {mr_cooldown_bars}")
 
     # ORB diagnostic
     orb = orb_tracker.levels
@@ -459,7 +468,6 @@ def _print_signal_diagnostic(
         print(f"  ORB window               : {orb['start']} → {orb['end']}")
     else:
         print("  ORB levels               : None (no bars landed in ORB window)")
-        # Diagnose why
         if features:
             first_ts = features[0].timestamp
             if first_ts.tzinfo is None:
@@ -478,12 +486,17 @@ def _print_signal_diagnostic(
 
 
 def run_debug_replay(args: argparse.Namespace) -> int:
+    dashboard_enabled = not getattr(args, "no_dashboard", False)
+
     # ── Matplotlib setup ────────────────────────────────────────────────
-    if args.no_show:
-        import matplotlib
-        matplotlib.use("Agg")
-    import matplotlib.dates as mdates
-    import matplotlib.pyplot as plt
+    plt: Any = None
+    mdates: Any = None
+    if dashboard_enabled:
+        if args.no_show:
+            import matplotlib
+            matplotlib.use("Agg")
+        import matplotlib.dates as mdates  # type: ignore[assignment]
+        import matplotlib.pyplot as plt  # type: ignore[assignment]
 
     # ── Session ID ──────────────────────────────────────────────────────
     session_id = args.session_id or datetime.now().strftime("debug_%Y%m%d_%H%M%S")
@@ -503,6 +516,7 @@ def run_debug_replay(args: argparse.Namespace) -> int:
     regime_clf = HybridThresholdRegimeClassifier()
     reclaim_mode_raw = getattr(args, "mr_reclaim_mode", "on")
     reclaim_mode = reclaim_mode_raw if reclaim_mode_raw in ("on", "off", "soft", "touch") else "on"
+    mr_sigma_entry = max(0.1, float(getattr(args, "mr_sigma_entry", config.MR_SIGMA_ENTRY)))
     soft_range_k = getattr(args, "mr_soft_range_impulse_k", config.MR_SOFT_RECLAIM_RANGE_IMPULSE_K)
     soft_alias = getattr(args, "mr_soft_impulse_k", None)
     if soft_alias is not None:
@@ -518,6 +532,7 @@ def run_debug_replay(args: argparse.Namespace) -> int:
     regime_enabled = getattr(args, "mr_regime_enabled", "on") == "on"
     signal_engine = MRSignalEngine(
         reclaim_mode=reclaim_mode,
+        sigma_entry=mr_sigma_entry,
         soft_reclaim_range_impulse_k=soft_range_k,
         cooldown_bars=cooldown_bars,
         max_attempts_per_side=config.MR_MAX_ATTEMPTS_PER_SIDE,
@@ -578,6 +593,12 @@ def run_debug_replay(args: argparse.Namespace) -> int:
         orb_selectivity_high_impulse_threshold=float(getattr(args, "alloc_openproxy_high_impulse_threshold", config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD)),
         orb_selectivity_min_persistence_when_high_impulse=max(0, int(getattr(args, "alloc_openproxy_min_persistence_when_high_impulse", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE))),
         enable_medium_impulse_weak_persistence_filter=(getattr(args, "alloc_openproxy_medium_impulse_weak_persistence_filter_enabled", "off") == "on"),
+        enable_medium_impulse_decay_filter=(getattr(args, "alloc_openproxy_medium_impulse_decay_filter_enabled", "off") == "on"),
+        medium_impulse_min_atr=float(getattr(args, "alloc_openproxy_medium_impulse_min_atr", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_ATR)),
+        medium_impulse_max_atr=float(getattr(args, "alloc_openproxy_medium_impulse_max_atr", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX_ATR)),
+        medium_impulse_min=float(getattr(args, "alloc_openproxy_medium_impulse_min", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN)),
+        medium_impulse_max=float(getattr(args, "alloc_openproxy_medium_impulse_max", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX)),
+        medium_impulse_min_persistence=max(0, int(getattr(args, "alloc_openproxy_medium_impulse_min_persistence", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_PERSISTENCE))),
     )
     open_proxy_state = OpenWindowState()
     open_proxy_result: OpenProxyDecision | None = None
@@ -1105,24 +1126,30 @@ def run_debug_replay(args: argparse.Namespace) -> int:
     agg = IntradayBarAggregator(interval_minutes=5, on_bar_callback=on_bar)
 
     # ── Chart setup ─────────────────────────────────────────────────────
-    fig, (ax_px, ax_bar) = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
-    line_px, = ax_px.plot([], [], color="tab:blue", linewidth=0.6, label="Trade Price")
+    fig: Any = None
+    ax_px: Any = None
+    ax_bar: Any = None
+    line_px: Any = None
+    dashboard: Any = None
+    if dashboard_enabled:
+        fig, (ax_px, ax_bar) = plt.subplots(2, 1, figsize=(12, 8), constrained_layout=True)
+        line_px, = ax_px.plot([], [], color="tab:blue", linewidth=0.6, label="Trade Price")
 
-    for ax in (ax_px, ax_bar):
-        ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-        ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=5))
-        ax.tick_params(axis="x", rotation=30, labelsize=8)
+        for ax in (ax_px, ax_bar):
+            ax.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+            ax.xaxis.set_major_locator(mdates.MinuteLocator(interval=5))
+            ax.tick_params(axis="x", rotation=30, labelsize=8)
 
-    ax_px.set_title("Replay Debug Cockpit — Tick Prices")
-    ax_px.set_ylabel("Price")
-    ax_px.legend(loc="best", fontsize=7)
-    ax_bar.set_ylabel("Price / VWAP")
+        ax_px.set_title("Replay Debug Cockpit — Tick Prices")
+        ax_px.set_ylabel("Price")
+        ax_px.legend(loc="best", fontsize=7)
+        ax_bar.set_ylabel("Price / VWAP")
 
-    dashboard = ReplayDashboard(fig, ax_px, ax_bar)
+        dashboard = ReplayDashboard(fig, ax_px, ax_bar)
 
-    if not args.no_show:
-        plt.ion()
-        plt.show(block=False)
+        if not args.no_show:
+            plt.ion()
+            plt.show(block=False)
 
     # ── Tick loop ───────────────────────────────────────────────────────
     times: list[datetime] = []
@@ -1150,7 +1177,7 @@ def run_debug_replay(args: argparse.Namespace) -> int:
         prices.append(float(px))
 
         # Periodic chart update
-        if idx % args.update_every == 0 or idx == total_ticks:
+        if dashboard_enabled and (idx % args.update_every == 0 or idx == total_ticks):
             line_px.set_data(times, prices)
             ax_px.relim()
             ax_px.autoscale_view()
@@ -1199,44 +1226,45 @@ def run_debug_replay(args: argparse.Namespace) -> int:
         agg.flush()
 
     # ── Final chart ─────────────────────────────────────────────────────
-    # Redraw bar axis cleanly
-    ax_bar.clear()
-    ax_bar.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
-    ax_bar.xaxis.set_major_locator(mdates.MinuteLocator(interval=5))
-    ax_bar.tick_params(axis="x", rotation=30, labelsize=8)
-    ax_bar.set_ylabel("Price / VWAP")
-
-    if bar_closes:
-        ax_bar.plot(bar_times, bar_closes, color="tab:purple",
-                    linewidth=1.2, label="5m Close", zorder=4)
-
-    # Reset legend tracking for clean final draw
-    dashboard._legend_labels_bar.clear()
-
-    dashboard.finalize(
-        bar_times=bar_times,
-        bar_closes=bar_closes,
-        vwap_history=vwap_history,
-        orb_levels=orb_tracker.levels,
-        regime_history=regime_clf.features_history,
-        signals=all_signals,
-        extra_title=f"Session: {session_id}",
-    )
-
-    # Tick chart final update
-    line_px.set_data(times, prices)
-    ax_px.relim()
-    ax_px.autoscale_view()
     total_elapsed = time.monotonic() - t_start
-    ax_px.set_title(
-        f"Replay Debug Cockpit — FINAL | "
-        f"ticks={total_ticks}  bars_closed={bars_closed}  "
-        f"bars_partial={bars_partial_flushed}  "
-        f"regime={regime_clf.current_regime or 'warmup'}  "
-        f"signals={len(all_signals)}  "
-        f"elapsed={total_elapsed:.1f}s",
-        fontsize=9,
-    )
+    if dashboard_enabled:
+        # Redraw bar axis cleanly
+        ax_bar.clear()
+        ax_bar.xaxis.set_major_formatter(mdates.DateFormatter("%H:%M"))
+        ax_bar.xaxis.set_major_locator(mdates.MinuteLocator(interval=5))
+        ax_bar.tick_params(axis="x", rotation=30, labelsize=8)
+        ax_bar.set_ylabel("Price / VWAP")
+
+        if bar_closes:
+            ax_bar.plot(bar_times, bar_closes, color="tab:purple",
+                        linewidth=1.2, label="5m Close", zorder=4)
+
+        # Reset legend tracking for clean final draw
+        dashboard._legend_labels_bar.clear()
+
+        dashboard.finalize(
+            bar_times=bar_times,
+            bar_closes=bar_closes,
+            vwap_history=vwap_history,
+            orb_levels=orb_tracker.levels,
+            regime_history=regime_clf.features_history,
+            signals=all_signals,
+            extra_title=f"Session: {session_id}",
+        )
+
+        # Tick chart final update
+        line_px.set_data(times, prices)
+        ax_px.relim()
+        ax_px.autoscale_view()
+        ax_px.set_title(
+            f"Replay Debug Cockpit — FINAL | "
+            f"ticks={total_ticks}  bars_closed={bars_closed}  "
+            f"bars_partial={bars_partial_flushed}  "
+            f"regime={regime_clf.current_regime or 'warmup'}  "
+            f"signals={len(all_signals)}  "
+            f"elapsed={total_elapsed:.1f}s",
+            fontsize=9,
+        )
 
     # ── Console summary ────────────────────────────────────────────────
     approved = [s for s in all_signals if s.approved]
@@ -1290,6 +1318,7 @@ def run_debug_replay(args: argparse.Namespace) -> int:
     _print_signal_diagnostic(
         regime_clf.features_history, vwap_history, bar_closes,
         bars_closed, config.REGIME_WARMUP_BARS, orb_tracker,
+        mr_sigma_entry, cooldown_bars,
     )
 
     # ── Report export ───────────────────────────────────────────────────
@@ -1311,6 +1340,7 @@ def run_debug_replay(args: argparse.Namespace) -> int:
         report.set_config_snapshot(
             _config_snapshot(
                 {
+                    "MR_SIGMA_ENTRY": mr_sigma_entry,
                     "MR_RECLAIM_MODE": reclaim_mode,
                     "MR_SOFT_RECLAIM_RANGE_IMPULSE_K": soft_range_k,
                     "MR_SOFT_RECLAIM_IMPULSE_K": soft_range_k,
@@ -1416,11 +1446,11 @@ def run_debug_replay(args: argparse.Namespace) -> int:
             print(f"  [exit_sim] ERROR: {type(exc).__name__}: {exc}")
 
     # ── Save / show chart ───────────────────────────────────────────────
-    if args.save_path:
+    if dashboard_enabled and args.save_path:
         fig.savefig(args.save_path, dpi=140)
         print(f"  Chart saved → {args.save_path}")
 
-    if not args.no_show:
+    if dashboard_enabled and not args.no_show:
         plt.ioff()
         plt.show()
 

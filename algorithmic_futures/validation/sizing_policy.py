@@ -74,6 +74,13 @@ class SizingConfig:
     v3_day_headroom_down: float = 600.0    # day_headroom < X => force 1c
     v3_trail_headroom_up: float = 1400.0   # trail_headroom >= X required for upsize
     v3_trail_headroom_down: float = 1200.0 # trail_headroom < X => force 1c
+    v3_atr_traction_scale_enabled: bool = False
+    v3_atr_traction_baseline: float = 12.0
+    v3_atr_traction_min_scale: float = 0.75
+    v3_atr_traction_max_scale: float = 1.25
+    v3_consistency_brake_enabled: bool = False
+    v3_consistency_cap_pct: float = 0.50
+    v3_consistency_loss_buffer_mult: float = 2.0
 
     # ── Profit protection ──────────────────────────────────────────────
     profit_lock: float = 2000.0            # equity >= X => lock 1c for remainder
@@ -121,6 +128,8 @@ class DaySizingRecord:
     v3_orb_day: bool = False
     v3_day_pnl: float = 0.0
     allocator_engine: str = ""
+    v3_effective_traction: float = 0.0
+    v3_consistency_brake_blocked: bool = False
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -169,6 +178,9 @@ class SizingPolicy:
         self._v3_upsize_trigger: str = ""       # which rule triggered 2c
         self._v3_orb_day: bool = False           # allocator chose ORB
         self._v3_first_trade_seen: bool = False  # have we processed the 1st trade?
+        self._v3_effective_traction: float = self.config.v3_earned_traction
+        self._v3_consistency_brake_blocked: bool = False
+        self._loss_proxy_abs: float = 0.0
 
         # ── Logging ─────────────────────────────────────────────────────
         self.daily_log: list[DaySizingRecord] = []
@@ -235,6 +247,9 @@ class SizingPolicy:
         self._v3_upsize_trigger = ""
         self._v3_orb_day = (active_engine == "orb")
         self._v3_first_trade_seen = False
+        self._v3_effective_traction = self._compute_v3_effective_traction(session_atr_median)
+        self._v3_consistency_brake_blocked = False
+        self._loss_proxy_abs = 0.0
 
         if self.config.policy == "fixed":
             self.day_contracts = self.config.fixed_contracts
@@ -349,6 +364,7 @@ class SizingPolicy:
         # Update loss streak
         if trade_pnl_dollars < 0:
             self.loss_streak += 1
+            self._loss_proxy_abs = max(self._loss_proxy_abs, abs(trade_pnl_dollars))
         else:
             self.loss_streak = 0
 
@@ -390,15 +406,23 @@ class SizingPolicy:
 
             if self.day_contracts == 1 and self._v3_headroom_ok and not self._v3_upsize_trigger:
                 # Trigger a) earned traction
-                if self.day_pnl >= self.config.v3_earned_traction:
-                    self.day_contracts = 2
-                    self._v3_upsize_trigger = "traction"
-                    self._earned_upsize_triggered = True
+                if self.day_pnl >= self._v3_effective_traction:
+                    if self._v3_consistency_brake_allows_upsize():
+                        self.day_contracts = 2
+                        self._v3_upsize_trigger = "traction"
+                        self._earned_upsize_triggered = True
+                    else:
+                        self._v3_consistency_brake_blocked = True
+                        self._downshift_reason = "v3_consistency_brake"
                 # Trigger b) first trade of day is a winner
                 elif is_first_trade and trade_pnl_dollars > 0:
-                    self.day_contracts = 2
-                    self._v3_upsize_trigger = "first_trade_win"
-                    self._earned_upsize_triggered = True
+                    if self._v3_consistency_brake_allows_upsize():
+                        self.day_contracts = 2
+                        self._v3_upsize_trigger = "first_trade_win"
+                        self._earned_upsize_triggered = True
+                    else:
+                        self._v3_consistency_brake_blocked = True
+                        self._downshift_reason = "v3_consistency_brake"
 
             elif self.day_contracts == 2 and self._v3_upsize_trigger:
                 # Giveback revert: if day_pnl drops below giveback_floor
@@ -485,6 +509,8 @@ class SizingPolicy:
             v3_orb_day=self._v3_orb_day,
             v3_day_pnl=round(self.day_pnl, 2),
             allocator_engine=self._active_engine,
+            v3_effective_traction=round(self._v3_effective_traction, 2),
+            v3_consistency_brake_blocked=self._v3_consistency_brake_blocked,
         )
 
         # Mark upsize eligibility
@@ -511,6 +537,28 @@ class SizingPolicy:
     def config_snapshot(self) -> dict[str, Any]:
         """Return config as a dict for artifact snapshots."""
         return asdict(self.config)
+
+    def _compute_v3_effective_traction(self, session_atr_median: float) -> float:
+        if not self.config.v3_atr_traction_scale_enabled:
+            return self.config.v3_earned_traction
+        baseline = max(0.1, self.config.v3_atr_traction_baseline)
+        atr_value = max(0.1, session_atr_median)
+        scale = atr_value / baseline
+        scale = min(self.config.v3_atr_traction_max_scale, scale)
+        scale = max(self.config.v3_atr_traction_min_scale, scale)
+        return self.config.v3_earned_traction * scale
+
+    def _v3_consistency_brake_allows_upsize(self) -> bool:
+        if not self.config.v3_consistency_brake_enabled:
+            return True
+        cumulative_profit = max(self.equity, 0.0)
+        if cumulative_profit <= 0:
+            return True
+        max_day_allowed = cumulative_profit * self.config.v3_consistency_cap_pct
+        remaining_room = max_day_allowed - self.day_pnl
+        loss_proxy = self._loss_proxy_abs if self._loss_proxy_abs > 0 else self.config.v3_giveback_floor
+        required_buffer = max(loss_proxy * self.config.v3_consistency_loss_buffer_mult, self.config.v3_giveback_floor)
+        return remaining_room >= required_buffer
 
 
 # ═══════════════════════════════════════════════════════════════════════

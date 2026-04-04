@@ -132,6 +132,12 @@ def build_runner_kwargs_from_preset(preset_name: str, artifacts_root: str) -> di
         "alloc_openproxy_high_impulse_threshold": float(overrides.get("alloc_openproxy_high_impulse_threshold", config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD)),
         "alloc_openproxy_min_persistence_when_high_impulse": int(overrides.get("alloc_openproxy_min_persistence_when_high_impulse", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE)),
         "alloc_openproxy_medium_impulse_weak_persistence_filter_enabled": _boolish(overrides.get("alloc_openproxy_medium_impulse_weak_persistence_filter_enabled", "off")),
+        "alloc_openproxy_medium_impulse_decay_filter_enabled": _boolish(overrides.get("alloc_openproxy_medium_impulse_decay_filter_enabled", "off")),
+        "alloc_openproxy_medium_impulse_min_atr": float(overrides.get("alloc_openproxy_medium_impulse_min_atr", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_ATR)),
+        "alloc_openproxy_medium_impulse_max_atr": float(overrides.get("alloc_openproxy_medium_impulse_max_atr", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX_ATR)),
+        "alloc_openproxy_medium_impulse_min": float(overrides.get("alloc_openproxy_medium_impulse_min", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN)),
+        "alloc_openproxy_medium_impulse_max": float(overrides.get("alloc_openproxy_medium_impulse_max", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX)),
+        "alloc_openproxy_medium_impulse_min_persistence": int(overrides.get("alloc_openproxy_medium_impulse_min_persistence", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_PERSISTENCE)),
         "orb_enabled": _boolish(overrides.get("orb_enabled", "on")),
         "orb_trigger_mode": overrides.get("orb_trigger_mode", "pullback_v3"),
         "orb_pullback_confirm_bars": int(overrides.get("orb_pullback_confirm_bars", 3)),
@@ -143,6 +149,13 @@ def build_runner_kwargs_from_preset(preset_name: str, artifacts_root: str) -> di
         "dyn_v3_day_headroom_down": float(overrides.get("dyn_v3_day_headroom_down", 600.0)),
         "dyn_v3_trail_headroom_up": float(overrides.get("dyn_v3_trail_headroom_up", 1400.0)),
         "dyn_v3_trail_headroom_down": float(overrides.get("dyn_v3_trail_headroom_down", 1200.0)),
+        "dyn_v3_atr_traction_scale_enabled": _boolish(overrides.get("dyn_v3_atr_traction_scale_enabled", "off")),
+        "dyn_v3_atr_traction_baseline": float(overrides.get("dyn_v3_atr_traction_baseline", config.DYN_V3_ATR_TRACTION_BASELINE)),
+        "dyn_v3_atr_traction_min_scale": float(overrides.get("dyn_v3_atr_traction_min_scale", config.DYN_V3_ATR_TRACTION_MIN_SCALE)),
+        "dyn_v3_atr_traction_max_scale": float(overrides.get("dyn_v3_atr_traction_max_scale", config.DYN_V3_ATR_TRACTION_MAX_SCALE)),
+        "dyn_v3_consistency_brake_enabled": _boolish(overrides.get("dyn_v3_consistency_brake_enabled", "off")),
+        "dyn_v3_consistency_cap_pct": float(overrides.get("dyn_v3_consistency_cap_pct", config.DYN_V3_CONSISTENCY_CAP_PCT)),
+        "dyn_v3_consistency_loss_buffer_mult": float(overrides.get("dyn_v3_consistency_loss_buffer_mult", config.DYN_V3_CONSISTENCY_LOSS_BUFFER_MULT)),
     }
 
 

@@ -298,6 +298,7 @@ class ValidationPackRunner:
         artifacts_root: str = "artifacts/validation_runs",
         continue_on_error: bool = True,
         mr_reclaim_mode: str = "on",
+        mr_sigma_entry: float = 1.4,
         mr_soft_impulse_k: float = 0.25,
         mr_dedupe_enabled: bool = False,
         mr_attempt_cap_enabled: bool = True,
@@ -325,6 +326,12 @@ class ValidationPackRunner:
         alloc_openproxy_high_impulse_threshold: float = 2.4,
         alloc_openproxy_min_persistence_when_high_impulse: int = 1,
         alloc_openproxy_medium_impulse_weak_persistence_filter_enabled: bool = False,
+        alloc_openproxy_medium_impulse_decay_filter_enabled: bool = False,
+        alloc_openproxy_medium_impulse_min_atr: float = 8.0,
+        alloc_openproxy_medium_impulse_max_atr: float = 15.0,
+        alloc_openproxy_medium_impulse_min: float = 0.9,
+        alloc_openproxy_medium_impulse_max: float = 2.0,
+        alloc_openproxy_medium_impulse_min_persistence: int = 2,
         orb_enabled: bool = False,
         orb_trigger_mode: str = "either",
         orb_pullback_confirm_bars: int = 3,
@@ -355,6 +362,14 @@ class ValidationPackRunner:
         dyn_v3_day_headroom_down: float = 600.0,
         dyn_v3_trail_headroom_up: float = 1400.0,
         dyn_v3_trail_headroom_down: float = 1200.0,
+        dyn_v3_atr_traction_scale_enabled: bool = False,
+        dyn_v3_atr_traction_baseline: float = 12.0,
+        dyn_v3_atr_traction_min_scale: float = 0.75,
+        dyn_v3_atr_traction_max_scale: float = 1.25,
+        dyn_v3_consistency_brake_enabled: bool = False,
+        dyn_v3_consistency_cap_pct: float = 0.50,
+        dyn_v3_consistency_loss_buffer_mult: float = 2.0,
+        batch_fast_mode: bool = False,
     ) -> None:
         self.pack = pack
         self.artifacts_root = artifacts_root
@@ -362,6 +377,7 @@ class ValidationPackRunner:
         if mr_reclaim_mode not in {"on", "off", "soft", "touch"}:
             raise ValueError("mr_reclaim_mode must be 'on', 'off', 'soft', or 'touch'")
         self.mr_reclaim_mode = mr_reclaim_mode
+        self.mr_sigma_entry = max(0.1, float(mr_sigma_entry))
         self.mr_soft_impulse_k = max(0.0, float(mr_soft_impulse_k))
         self.mr_dedupe_enabled = bool(mr_dedupe_enabled)
         self.mr_attempt_cap_enabled = bool(mr_attempt_cap_enabled)
@@ -391,6 +407,12 @@ class ValidationPackRunner:
         self.alloc_openproxy_high_impulse_threshold = float(alloc_openproxy_high_impulse_threshold)
         self.alloc_openproxy_min_persistence_when_high_impulse = max(0, int(alloc_openproxy_min_persistence_when_high_impulse))
         self.alloc_openproxy_medium_impulse_weak_persistence_filter_enabled = bool(alloc_openproxy_medium_impulse_weak_persistence_filter_enabled)
+        self.alloc_openproxy_medium_impulse_decay_filter_enabled = bool(alloc_openproxy_medium_impulse_decay_filter_enabled)
+        self.alloc_openproxy_medium_impulse_min_atr = float(alloc_openproxy_medium_impulse_min_atr)
+        self.alloc_openproxy_medium_impulse_max_atr = float(alloc_openproxy_medium_impulse_max_atr)
+        self.alloc_openproxy_medium_impulse_min = float(alloc_openproxy_medium_impulse_min)
+        self.alloc_openproxy_medium_impulse_max = float(alloc_openproxy_medium_impulse_max)
+        self.alloc_openproxy_medium_impulse_min_persistence = max(0, int(alloc_openproxy_medium_impulse_min_persistence))
         self.orb_enabled = bool(orb_enabled)
         self.orb_trigger_mode = orb_trigger_mode if orb_trigger_mode in {"break", "pullback", "either", "pullback_v3"} else "either"
         self.orb_pullback_confirm_bars = max(1, int(orb_pullback_confirm_bars))
@@ -423,6 +445,14 @@ class ValidationPackRunner:
         self.dyn_v3_day_headroom_down = float(dyn_v3_day_headroom_down)
         self.dyn_v3_trail_headroom_up = float(dyn_v3_trail_headroom_up)
         self.dyn_v3_trail_headroom_down = float(dyn_v3_trail_headroom_down)
+        self.dyn_v3_atr_traction_scale_enabled = bool(dyn_v3_atr_traction_scale_enabled)
+        self.dyn_v3_atr_traction_baseline = float(dyn_v3_atr_traction_baseline)
+        self.dyn_v3_atr_traction_min_scale = float(dyn_v3_atr_traction_min_scale)
+        self.dyn_v3_atr_traction_max_scale = float(dyn_v3_atr_traction_max_scale)
+        self.dyn_v3_consistency_brake_enabled = bool(dyn_v3_consistency_brake_enabled)
+        self.dyn_v3_consistency_cap_pct = float(dyn_v3_consistency_cap_pct)
+        self.dyn_v3_consistency_loss_buffer_mult = float(dyn_v3_consistency_loss_buffer_mult)
+        self.batch_fast_mode = bool(batch_fast_mode)
 
     # ── Public API ──────────────────────────────────────────────────────
 
@@ -493,6 +523,13 @@ class ValidationPackRunner:
             v3_day_headroom_down=self.dyn_v3_day_headroom_down,
             v3_trail_headroom_up=self.dyn_v3_trail_headroom_up,
             v3_trail_headroom_down=self.dyn_v3_trail_headroom_down,
+            v3_atr_traction_scale_enabled=self.dyn_v3_atr_traction_scale_enabled,
+            v3_atr_traction_baseline=self.dyn_v3_atr_traction_baseline,
+            v3_atr_traction_min_scale=self.dyn_v3_atr_traction_min_scale,
+            v3_atr_traction_max_scale=self.dyn_v3_atr_traction_max_scale,
+            v3_consistency_brake_enabled=self.dyn_v3_consistency_brake_enabled,
+            v3_consistency_cap_pct=self.dyn_v3_consistency_cap_pct,
+            v3_consistency_loss_buffer_mult=self.dyn_v3_consistency_loss_buffer_mult,
         )
         sizing_policy = SizingPolicy(sizing_cfg)
         print(f"  [SIZING] policy={sizing_cfg.policy} "
@@ -656,6 +693,9 @@ class ValidationPackRunner:
         print(f"{'═'*70}")
 
         agg_metrics = self._stage_aggregate(run_dir)
+        scorecard_metrics = self._stage_scorecard(run_dir, agg_metrics)
+        if scorecard_metrics is not None:
+            agg_metrics = self._merge_scorecard_into_aggregate(run_dir, agg_metrics, scorecard_metrics)
         mc_profile = self._stage_bridge(run_dir)
         mc_results = self._stage_mc_survival(run_dir, agg_metrics)
         gate_result = self._stage_promotion_gate(run_dir)
@@ -739,8 +779,8 @@ class ValidationPackRunner:
             return None
 
     def _stage_bridge(self, run_dir: Path) -> dict | None:
-        """Stage 2: build MC profile via ReplayProfileBridge."""
-        print("\n  ▶ Stage 2: MC Profile Bridge")
+        """Stage 3: build MC profile via ReplayProfileBridge."""
+        print("\n  ▶ Stage 3: MC Profile Bridge")
         try:
             from validation.replay_profile_bridge import ReplayProfileBridge
             import config as _cfg
@@ -762,8 +802,8 @@ class ValidationPackRunner:
     def _stage_mc_survival(
         self, run_dir: Path, agg_metrics: dict | None
     ) -> dict | None:
-        """Stage 3: Monte Carlo combine-survival simulation (base + stress)."""
-        print("\n  ▶ Stage 3: Monte Carlo Survival Simulation")
+        """Stage 4: Monte Carlo combine-survival simulation (base + stress)."""
+        print("\n  ▶ Stage 4: Monte Carlo Survival Simulation")
 
         if agg_metrics is None or not agg_metrics.get("readiness"):
             print("    ⚠ Skipped — insufficient trades for MC readiness")
@@ -834,8 +874,8 @@ class ValidationPackRunner:
             return None
 
     def _stage_promotion_gate(self, run_dir: Path) -> Any:
-        """Stage 4: PromotionGate evaluation."""
-        print("\n  ▶ Stage 4: Promotion Gate")
+        """Stage 5: PromotionGate evaluation."""
+        print("\n  ▶ Stage 5: Promotion Gate")
         try:
             from validation.promotion_gate import PromotionGate, PromotionGateResult  # noqa: F811
             gate = PromotionGate(str(run_dir))
@@ -851,6 +891,66 @@ class ValidationPackRunner:
             logger.exception("Promotion gate failed: %s", exc)
             print(f"    ✗ Gate FAILED: {type(exc).__name__}: {exc}")
             return None
+
+    def _stage_scorecard(
+        self,
+        run_dir: Path,
+        agg_metrics: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        """Stage 2: generate scorecard artifacts from session outputs."""
+        print("\n  ▶ Stage 2: Scorecard Aggregation")
+
+        if agg_metrics is None:
+            print("    ⚠ Skipped — trade aggregation did not complete")
+            return None
+
+        try:
+            from validation.scorecard import ScorecardAggregator
+
+            aggregator = ScorecardAggregator(str(run_dir))
+            scorecard = aggregator.generate()
+
+            approval_rate = scorecard.get("approval_rate", scorecard.get("aggregate_approval_rate", 0.0))
+            expectancy_r = scorecard.get("expectancy_r")
+            if expectancy_r is None:
+                expectancy_r = (scorecard.get("trade_metrics") or {}).get("expectancy_r")
+
+            print(
+                "    ✓ scorecard: "
+                f"approval_rate={float(approval_rate or 0.0):.2%}, "
+                f"expectancy_r={float(expectancy_r or 0.0):.4f}"
+            )
+            return scorecard
+        except Exception as exc:
+            logger.exception("Scorecard stage failed: %s", exc)
+            print(f"    ✗ Scorecard FAILED: {type(exc).__name__}: {exc}")
+            return None
+
+    def _merge_scorecard_into_aggregate(
+        self,
+        run_dir: Path,
+        agg_metrics: dict[str, Any] | None,
+        scorecard_metrics: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        """Backfill promotion-gate fields into run-level aggregate metrics."""
+        aggregate_path = run_dir / "aggregate_metrics.json"
+        merged = dict(agg_metrics or {})
+
+        approval_rate = scorecard_metrics.get("approval_rate")
+        if approval_rate is None:
+            approval_rate = scorecard_metrics.get("aggregate_approval_rate")
+        if approval_rate is not None:
+            merged["approval_rate"] = approval_rate
+
+        if "expectancy_r" not in merged:
+            trade_metrics = scorecard_metrics.get("trade_metrics") or {}
+            expectancy_r = scorecard_metrics.get("expectancy_r", trade_metrics.get("expectancy_r"))
+            if expectancy_r is not None:
+                merged["expectancy_r"] = expectancy_r
+
+        aggregate_payload = json.dumps(merged, indent=2, default=str) + "\n"
+        aggregate_path.write_text(aggregate_payload, encoding="utf-8")
+        return merged
 
     def _stage_allocator_debug(self, run_dir: Path) -> Path | None:
         """Stage allocator session-level diagnostics as a single CSV artifact."""
@@ -1129,7 +1229,9 @@ class ValidationPackRunner:
 
         args = self._build_replay_args(
             session,
+            self.batch_fast_mode,
             self.mr_reclaim_mode,
+            self.mr_sigma_entry,
             self.mr_soft_impulse_k,
             self.mr_dedupe_enabled,
             self.mr_attempt_cap_enabled,
@@ -1157,6 +1259,12 @@ class ValidationPackRunner:
             self.alloc_openproxy_high_impulse_threshold,
             self.alloc_openproxy_min_persistence_when_high_impulse,
             self.alloc_openproxy_medium_impulse_weak_persistence_filter_enabled,
+            self.alloc_openproxy_medium_impulse_decay_filter_enabled,
+            self.alloc_openproxy_medium_impulse_min_atr,
+            self.alloc_openproxy_medium_impulse_max_atr,
+            self.alloc_openproxy_medium_impulse_min,
+            self.alloc_openproxy_medium_impulse_max,
+            self.alloc_openproxy_medium_impulse_min_persistence,
             orb_enabled,
             self.orb_trigger_mode,
             self.orb_pullback_confirm_bars,
@@ -1209,7 +1317,9 @@ class ValidationPackRunner:
     @staticmethod
     def _build_replay_args(
         session: SessionEntry,
+        batch_fast_mode: bool,
         mr_reclaim_mode: str,
+        mr_sigma_entry: float,
         mr_soft_impulse_k: float,
         mr_dedupe_enabled: bool,
         mr_attempt_cap_enabled: bool,
@@ -1237,6 +1347,12 @@ class ValidationPackRunner:
         alloc_openproxy_high_impulse_threshold: float,
         alloc_openproxy_min_persistence_when_high_impulse: int,
         alloc_openproxy_medium_impulse_weak_persistence_filter_enabled: bool,
+        alloc_openproxy_medium_impulse_decay_filter_enabled: bool,
+        alloc_openproxy_medium_impulse_min_atr: float,
+        alloc_openproxy_medium_impulse_max_atr: float,
+        alloc_openproxy_medium_impulse_min: float,
+        alloc_openproxy_medium_impulse_max: float,
+        alloc_openproxy_medium_impulse_min_persistence: int,
         orb_enabled: bool,
         orb_trigger_mode: str,
         orb_pullback_confirm_bars: int,
@@ -1253,10 +1369,12 @@ class ValidationPackRunner:
             update_every=9999,  # suppress chart updates (headless)
             pause=0.001,
             no_show=True,
+            no_dashboard=batch_fast_mode,
             save_path="",
             session_id=session.session_id,
             no_report=False,
             mr_reclaim_mode=mr_reclaim_mode,
+            mr_sigma_entry=mr_sigma_entry,
             mr_soft_impulse_k=mr_soft_impulse_k,
             mr_dedupe_enabled=("on" if mr_dedupe_enabled else "off"),
             mr_attempt_cap_enabled=("on" if mr_attempt_cap_enabled else "off"),
@@ -1290,6 +1408,12 @@ class ValidationPackRunner:
             alloc_openproxy_high_impulse_threshold=alloc_openproxy_high_impulse_threshold,
             alloc_openproxy_min_persistence_when_high_impulse=alloc_openproxy_min_persistence_when_high_impulse,
             alloc_openproxy_medium_impulse_weak_persistence_filter_enabled=("on" if alloc_openproxy_medium_impulse_weak_persistence_filter_enabled else "off"),
+            alloc_openproxy_medium_impulse_decay_filter_enabled=("on" if alloc_openproxy_medium_impulse_decay_filter_enabled else "off"),
+            alloc_openproxy_medium_impulse_min_atr=alloc_openproxy_medium_impulse_min_atr,
+            alloc_openproxy_medium_impulse_max_atr=alloc_openproxy_medium_impulse_max_atr,
+            alloc_openproxy_medium_impulse_min=alloc_openproxy_medium_impulse_min,
+            alloc_openproxy_medium_impulse_max=alloc_openproxy_medium_impulse_max,
+            alloc_openproxy_medium_impulse_min_persistence=alloc_openproxy_medium_impulse_min_persistence,
         )
 
     @staticmethod

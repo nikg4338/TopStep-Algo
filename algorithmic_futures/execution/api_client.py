@@ -224,6 +224,7 @@ class ProjectXClient:
         symbol: str,
         on_tick: Callable | None = None,
         on_bar: Callable | None = None,
+        on_order_update: Callable | None = None,
     ) -> None:
         """Connect to WebSocket and stream ticks.  Reconnects automatically."""
         import websockets  # type: ignore[import-untyped]
@@ -249,10 +250,13 @@ class ProjectXClient:
 
                     async for raw_msg in ws:
                         msg = json.loads(raw_msg)
-                        if on_tick and msg.get("type") == "tick":
+                        msg_type = str(msg.get("type", "")).lower()
+                        if on_tick and msg_type == "tick":
                             on_tick(msg)
-                        if on_bar and msg.get("type") == "bar":
+                        if on_bar and msg_type == "bar":
                             on_bar(msg)
+                        if on_order_update and msg_type in {"order", "fill", "execution", "order_update"}:
+                            on_order_update(msg)
 
             except Exception as exc:
                 self._ws_connected = False

@@ -348,8 +348,11 @@ class ScorecardAggregator:
             "per_category_stats": per_category,
         }
 
+        aggregate["approval_rate"] = aggregate["aggregate_approval_rate"]
+
         if agg_trade:
             aggregate["trade_metrics"] = agg_trade
+            aggregate["expectancy_r"] = agg_trade.get("expectancy_r", 0.0)
 
         # ── Baseline comparison ─────────────────────────────────────────
         baseline: dict[str, Any] | None = None

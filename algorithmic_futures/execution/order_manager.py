@@ -126,6 +126,7 @@ class OrderManager:
         self.sizer = sizer
         self.state = state
         self._trade_log: list[TradeRecord] = []
+        self._last_fill_event: dict[str, dict[str, Any]] = {}
 
     # ── public API ──────────────────────────────────────────────────────
 
@@ -304,6 +305,10 @@ class OrderManager:
 
     def flatten_all(self, reason: str = "EOD_CLOSE") -> None:
         """Emergency / EOD flatten. Close all positions via market orders."""
+        self.flatten_all_with_price(reason=reason, exit_price=None)
+
+    def flatten_all_with_price(self, reason: str = "EOD_CLOSE", exit_price: float | None = None) -> None:
+        """Emergency / EOD flatten with an optional best-known exit price."""
         logger.info("FLATTEN ALL — reason: %s", reason)
 
         # Cancel pending exit orders first
@@ -317,9 +322,10 @@ class OrderManager:
 
         # If we had a tracked position, record the exit at unknown price
         if self.state.open_position is not None:
-            # Best-effort: use last known price or 0 (session manager
-            # should reconcile from broker after flatten)
-            self.record_exit(exit_price=0.0, exit_reason=reason)
+            position = self.state.open_position
+            if exit_price is None:
+                exit_price = float(position.get("entry_price", 0.0))
+            self.record_exit(exit_price=float(exit_price), exit_reason=reason)
 
     # ── bracket exit management (client_fallback mode) ──────────────────
 
@@ -389,6 +395,38 @@ class OrderManager:
 
         self.record_exit(exit_price=fill_price, exit_reason=reason)
 
+    def handle_order_update(self, msg: dict[str, Any]) -> None:
+        """Handle broker order/fill updates delivered over WebSocket."""
+        order_id = self._extract_order_id(msg)
+        if not order_id:
+            return
+
+        fill_price = self._extract_fill_price(msg)
+        status = str(
+            msg.get("status")
+            or msg.get("orderStatus")
+            or msg.get("state")
+            or msg.get("event")
+            or ""
+        ).upper()
+        event_type = str(msg.get("type", "")).lower()
+
+        if fill_price is not None or status in {"FILLED", "COMPLETE", "EXECUTED"} or event_type in {"fill", "execution"}:
+            self._last_fill_event[order_id] = {
+                "orderId": order_id,
+                "status": status or "FILLED",
+                "filledPrice": fill_price,
+                "raw": msg,
+            }
+
+        if order_id in self.state.pending_exit_orders and fill_price is None:
+            fill_price = self._infer_exit_fill_price(order_id)
+            if fill_price is not None and order_id in self._last_fill_event:
+                self._last_fill_event[order_id]["filledPrice"] = fill_price
+
+        if order_id in self.state.pending_exit_orders and fill_price is not None:
+            self.handle_exit_fill(order_id, fill_price)
+
     # ── fill polling ────────────────────────────────────────────────────
 
     def _wait_for_fill(self, order_id: str) -> dict | None:
@@ -400,20 +438,58 @@ class OrderManager:
         deadline = time.monotonic() + ORDER_FILL_TIMEOUT_SEC
         while time.monotonic() < deadline:
             try:
+                cached_fill = self._last_fill_event.pop(order_id, None)
+                if cached_fill is not None:
+                    return cached_fill
+
                 orders = self.api.get_open_orders()
                 for o in orders:
                     if str(o.get("orderId")) == order_id:
                         if o.get("status", "").upper() in ("FILLED", "COMPLETE"):
                             return o
-                # Also check if order disappeared from open list (filled & removed)
-                ids = {str(o.get("orderId")) for o in orders}
-                if order_id not in ids:
-                    # assume filled
-                    return {"orderId": order_id, "status": "FILLED"}
             except Exception:
                 logger.exception("Error polling fill for %s", order_id)
             time.sleep(0.5)
         return None
+
+    def reconcile_with_broker(self) -> dict[str, Any]:
+        """Bring local position/order state back in sync with broker reality."""
+        positions = self.api.get_positions()
+        open_orders = self.api.get_open_orders()
+
+        active_positions = [p for p in positions if abs(self._position_qty(p)) > 0]
+        open_order_ids = {
+            oid for oid in (self._extract_order_id(o) for o in open_orders) if oid
+        }
+        result = {
+            "broker_positions": len(active_positions),
+            "open_orders": len(open_order_ids),
+            "cleared_local_position": False,
+            "flattened_broker_position": False,
+            "cancelled_orphan_orders": [],
+        }
+
+        if self.state.open_position is not None and not active_positions:
+            self.state.open_position = None
+            self.state.pending_exit_orders = []
+            result["cleared_local_position"] = True
+
+        if self.state.open_position is None and active_positions:
+            self.api.close_all_positions()
+            result["flattened_broker_position"] = True
+
+        pending_ids = [oid for oid in self.state.pending_exit_orders if oid]
+        for oid in pending_ids:
+            if oid not in open_order_ids:
+                continue
+            if self.state.open_position is None:
+                self.api.cancel_order(oid)
+                result["cancelled_orphan_orders"].append(oid)
+
+        if self.state.open_position is None:
+            self.state.pending_exit_orders = []
+
+        return result
 
     # ── persistence & logging ───────────────────────────────────────────
 
@@ -483,4 +559,55 @@ class OrderManager:
         for t in self._trade_log:
             if t.trade_id == trade_id:
                 return t
+        return None
+
+    @staticmethod
+    def _extract_order_id(msg: dict[str, Any]) -> str:
+        return str(
+            msg.get("orderId")
+            or msg.get("order_id")
+            or msg.get("id")
+            or msg.get("clientOrderId")
+            or ""
+        )
+
+    @staticmethod
+    def _extract_fill_price(msg: dict[str, Any]) -> float | None:
+        raw = msg.get("filledPrice")
+        if raw is None:
+            raw = msg.get("fillPrice")
+        if raw is None:
+            raw = msg.get("price")
+        if raw is None:
+            return None
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+
+    @staticmethod
+    def _position_qty(position: Any) -> int:
+        raw = getattr(position, "qty", None)
+        if raw is None and isinstance(position, dict):
+            raw = position.get("qty", position.get("quantity", 0))
+        try:
+            return int(raw or 0)
+        except (TypeError, ValueError):
+            return 0
+
+    def _infer_exit_fill_price(self, order_id: str) -> float | None:
+        pos = self.state.open_position or {}
+        pending = self.state.pending_exit_orders
+        if not pending:
+            return None
+        if pending and pending[0] == order_id:
+            try:
+                return float(pos.get("stop_price"))
+            except (TypeError, ValueError):
+                return None
+        if len(pending) > 1 and pending[1] == order_id:
+            try:
+                return float(pos.get("target_price"))
+            except (TypeError, ValueError):
+                return None
         return None

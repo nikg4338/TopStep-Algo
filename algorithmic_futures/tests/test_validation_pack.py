@@ -246,6 +246,183 @@ class TestRunnerCreatesDirs:
         # run_debug_replay should have been called twice
         assert mock_replay.call_count == 2
 
+    def test_build_replay_args_enables_batch_fast_mode_flags(self) -> None:
+        session = SessionEntry(
+            session_id="sess_fast",
+            start="2026-02-18T14:30:00Z",
+            end="2026-02-18T21:00:00Z",
+            category="range",
+        )
+
+        runner = ValidationPackRunner(
+            pack=_make_minimal_pack(),
+            batch_fast_mode=True,
+        )
+
+        args = runner._build_replay_args(
+            session,
+            runner.batch_fast_mode,
+            runner.mr_reclaim_mode,
+            runner.mr_sigma_entry,
+            runner.mr_soft_impulse_k,
+            runner.mr_dedupe_enabled,
+            runner.mr_attempt_cap_enabled,
+            runner.mr_cooldown_bars,
+            runner.mr_first_outside_enabled,
+            runner.mr_touch_latch_reset_buffer,
+            runner.mr_dedupe_window_bars,
+            runner.mr_dedupe_min_delta_z,
+            runner.mr_regime_enabled,
+            runner.engine_mode,
+            runner.allocator_policy,
+            runner.allocator_v1_adx_threshold,
+            runner.allocator_v2_trend_open_threshold,
+            runner.allocator_v2_rising_threshold,
+            runner.allocator_v2_rising_bars,
+            runner.allocator_v2_range_threshold,
+            runner.allocator_v2_range_bars,
+            runner.alloc_openproxy_or_width_atr,
+            runner.alloc_openproxy_impulse_atr,
+            runner.alloc_openproxy_persist_bars,
+            runner.alloc_openproxy_require_break,
+            runner.alloc_openproxy_enable_orb_selectivity_refinement,
+            runner.alloc_openproxy_low_atr_threshold,
+            runner.alloc_openproxy_min_persistence_in_low_atr,
+            runner.alloc_openproxy_high_impulse_threshold,
+            runner.alloc_openproxy_min_persistence_when_high_impulse,
+            runner.alloc_openproxy_medium_impulse_weak_persistence_filter_enabled,
+            runner.alloc_openproxy_medium_impulse_decay_filter_enabled,
+            runner.alloc_openproxy_medium_impulse_min_atr,
+            runner.alloc_openproxy_medium_impulse_max_atr,
+            runner.alloc_openproxy_medium_impulse_min,
+            runner.alloc_openproxy_medium_impulse_max,
+            runner.alloc_openproxy_medium_impulse_min_persistence,
+            runner.orb_enabled,
+            runner.orb_trigger_mode,
+            runner.orb_pullback_confirm_bars,
+            runner.orb_pullback_max_bars,
+            runner.orb_pullback_tolerance_pts,
+            runner.orb_pullback_entry_mode,
+        )
+
+        assert args.no_show is True
+        assert args.no_dashboard is True
+        assert args.no_report is False
+
+    @patch("dotenv.load_dotenv")
+    @patch("simulation.mr_exit_simulator.DatabentoReplayProvider")
+    @patch("replay_debug.run_debug_replay")
+    def test_runner_generates_scorecard_and_enriches_aggregate(
+        self,
+        mock_replay,
+        mock_provider,
+        mock_dotenv,
+        tmp_path,
+    ):
+        """Runner writes scorecard outputs and backfills gate metrics to aggregate_metrics.json."""
+        pack = ValidationPack(
+            pack_id="scorecard_pack",
+            description="Single-session pack for scorecard staging",
+            sessions=[
+                SessionEntry(
+                    session_id="score_sess",
+                    start="2026-02-18T14:30:00Z",
+                    end="2026-02-18T15:00:00Z",
+                    category="range",
+                )
+            ],
+        )
+
+        def fake_replay(args):
+            import config
+            from pathlib import Path
+
+            session_dir = Path(config.ARTIFACTS_DIR) / args.session_id
+            session_dir.mkdir(parents=True, exist_ok=True)
+
+            with (session_dir / "signals.csv").open("w", newline="") as fh:
+                writer = csv.DictWriter(
+                    fh,
+                    fieldnames=[
+                        "approved",
+                        "signal_type",
+                        "rejection_reason",
+                        "regime",
+                        "side",
+                        "sigma_points",
+                        "z_score",
+                        "band_level",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "approved": "true",
+                        "signal_type": "MR",
+                        "rejection_reason": "",
+                        "regime": "range",
+                        "side": "LONG",
+                        "sigma_points": "1.4",
+                        "z_score": "1.2",
+                        "band_level": "2.0",
+                    }
+                )
+
+            with (session_dir / "trades.csv").open("w", newline="") as fh:
+                writer = csv.DictWriter(
+                    fh,
+                    fieldnames=[
+                        "trade_id",
+                        "session_id",
+                        "pnl_dollars",
+                        "pnl_r",
+                        "entry_timestamp",
+                        "exit_timestamp",
+                        "mae_points",
+                        "mfe_points",
+                        "hold_minutes",
+                    ],
+                )
+                writer.writeheader()
+                writer.writerow(
+                    {
+                        "trade_id": "score_sess_t1",
+                        "session_id": args.session_id,
+                        "pnl_dollars": "25.0",
+                        "pnl_r": "0.5",
+                        "entry_timestamp": "2026-02-18T14:50:00+00:00",
+                        "exit_timestamp": "2026-02-18T15:00:00+00:00",
+                        "mae_points": "0.5",
+                        "mfe_points": "1.5",
+                        "hold_minutes": "10",
+                    }
+                )
+
+            return 0
+
+        mock_replay.side_effect = fake_replay
+        mock_provider.return_value.replay_trades.return_value = None
+
+        runner = ValidationPackRunner(
+            pack=pack,
+            artifacts_root=str(tmp_path),
+            continue_on_error=True,
+        )
+        runner.run()
+
+        run_dir = next(tmp_path.iterdir())
+        scorecard_metrics_path = run_dir / "scorecard" / "aggregate_metrics.json"
+        aggregate_metrics_path = run_dir / "aggregate_metrics.json"
+
+        assert scorecard_metrics_path.exists()
+        assert aggregate_metrics_path.exists()
+
+        scorecard_metrics = json.loads(scorecard_metrics_path.read_text(encoding="utf-8"))
+        aggregate_metrics = json.loads(aggregate_metrics_path.read_text(encoding="utf-8"))
+
+        assert scorecard_metrics["approval_rate"] == pytest.approx(1.0)
+        assert aggregate_metrics["approval_rate"] == pytest.approx(1.0)
+
 
 class TestAllocatorDebugArtifact:
     @patch("dotenv.load_dotenv")

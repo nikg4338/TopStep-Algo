@@ -99,6 +99,7 @@ class SessionManager:
         self._scheduler: AsyncIOScheduler | None = None
         self._loop: asyncio.AbstractEventLoop | None = None
         self._running = False
+        self._last_market_price: float | None = None
 
         logger.info("SessionManager initialised")
 
@@ -247,6 +248,7 @@ class SessionManager:
         try:
             # 1. Authenticate with broker
             self.api.authenticate()
+            self._reconcile_broker_state()
             balance = self.api.get_account_balance()
             self.state.account_balance = balance.balance
             if self.state.account_high_water_mark == 0.0:
@@ -326,11 +328,15 @@ class SessionManager:
                 symbol=INSTRUMENT,
                 on_tick=self._on_tick,
                 on_bar=None,  # we build our own bars via IntradayBarAggregator
+                on_order_update=self._on_order_update,
             )
         except Exception:
             logger.exception("Market data stream terminated — attempting emergency flatten")
             try:
-                self.order_manager.flatten_all(reason="WS_DISCONNECT")
+                self.order_manager.flatten_all_with_price(
+                    reason="WS_DISCONNECT",
+                    exit_price=self._last_market_price,
+                )
             except Exception:
                 logger.exception("Emergency flatten failed after WS disconnect")
 
@@ -343,6 +349,8 @@ class SessionManager:
 
             if price <= 0:
                 return
+
+            self._last_market_price = price
 
             # Parse timestamp (ISO or epoch)
             if isinstance(ts_raw, (int, float)):
@@ -358,6 +366,13 @@ class SessionManager:
 
         except Exception:
             logger.exception("Error processing tick: %s", tick_msg)
+
+    def _on_order_update(self, msg: dict) -> None:
+        """Process a broker order/fill update from the WebSocket."""
+        try:
+            self.order_manager.handle_order_update(msg)
+        except Exception:
+            logger.exception("Error processing order update: %s", msg)
 
     # ── Bar Dispatch (strategy routing) ─────────────────────────────────
 
@@ -423,7 +438,10 @@ class SessionManager:
             self.bar_aggregator.flush()
 
             # Flatten everything
-            self.order_manager.flatten_all(reason="EOD_CLOSE")
+            self.order_manager.flatten_all_with_price(
+                reason="EOD_CLOSE",
+                exit_price=self._last_market_price,
+            )
 
             # Record EOD balance
             try:
@@ -567,6 +585,18 @@ class SessionManager:
                 logger.exception("Failed to load persisted state — starting fresh")
         else:
             logger.info("No persisted state found at %s — starting fresh", state_path)
+
+    def _reconcile_broker_state(self) -> None:
+        """Normalise persisted state against live broker state before trading."""
+        try:
+            result = self.order_manager.reconcile_with_broker()
+            logger.info("Broker reconciliation complete: %s", json.dumps(result, default=str))
+        except Exception:
+            logger.exception("Broker reconciliation failed; flattening all positions as safety fallback")
+            try:
+                self.api.close_all_positions()
+            except Exception:
+                logger.exception("Safety flatten failed during reconciliation")
 
     # ═══════════════════════════════════════════════════════════════════
     #  Internal helpers

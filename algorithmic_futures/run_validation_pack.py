@@ -79,6 +79,19 @@ def _load_preset(name: str) -> dict:
         overrides["alloc_openproxy_high_impulse_threshold"] = a.get("orb_selectivity_high_impulse_threshold", config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD)
         overrides["alloc_openproxy_min_persistence_when_high_impulse"] = a.get("orb_selectivity_min_persistence_when_high_impulse", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE)
         overrides["alloc_openproxy_medium_impulse_weak_persistence_filter_enabled"] = "on" if a.get("medium_impulse_weak_persistence_filter_enabled", False) else "off"
+        overrides["alloc_openproxy_medium_impulse_decay_filter_enabled"] = "on" if a.get("medium_impulse_decay_filter_enabled", False) else "off"
+        overrides["alloc_openproxy_medium_impulse_min_atr"] = a.get("medium_impulse_min_atr", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_ATR)
+        overrides["alloc_openproxy_medium_impulse_max_atr"] = a.get("medium_impulse_max_atr", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX_ATR)
+        overrides["alloc_openproxy_medium_impulse_min"] = a.get("medium_impulse_min", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN)
+        overrides["alloc_openproxy_medium_impulse_max"] = a.get("medium_impulse_max", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX)
+        overrides["alloc_openproxy_medium_impulse_min_persistence"] = a.get("medium_impulse_min_persistence", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_PERSISTENCE)
+    overrides["dyn_v3_atr_traction_scale_enabled"] = "on" if s.get("v3_atr_traction_scale_enabled", False) else "off"
+    overrides["dyn_v3_atr_traction_baseline"] = s.get("v3_atr_traction_baseline", config.DYN_V3_ATR_TRACTION_BASELINE)
+    overrides["dyn_v3_atr_traction_min_scale"] = s.get("v3_atr_traction_min_scale", config.DYN_V3_ATR_TRACTION_MIN_SCALE)
+    overrides["dyn_v3_atr_traction_max_scale"] = s.get("v3_atr_traction_max_scale", config.DYN_V3_ATR_TRACTION_MAX_SCALE)
+    overrides["dyn_v3_consistency_brake_enabled"] = "on" if s.get("v3_consistency_brake_enabled", False) else "off"
+    overrides["dyn_v3_consistency_cap_pct"] = s.get("v3_consistency_cap_pct", config.DYN_V3_CONSISTENCY_CAP_PCT)
+    overrides["dyn_v3_consistency_loss_buffer_mult"] = s.get("v3_consistency_loss_buffer_mult", config.DYN_V3_CONSISTENCY_LOSS_BUFFER_MULT)
     _PRESET_TO_CLI[name] = overrides
     return overrides
 
@@ -119,6 +132,12 @@ def main() -> int:
         choices=("on", "off", "soft", "touch"),
         default="on",
         help="MR candidate mode: 'on' requires reclaim, 'off' threshold-cross, 'soft' threshold-cross + light momentum confirm",
+    )
+    parser.add_argument(
+        "--mr-sigma-entry",
+        type=float,
+        default=config.MR_SIGMA_ENTRY,
+        help="MR entry threshold in z-score units",
     )
     parser.add_argument(
         "--mr-soft-range-impulse-k",
@@ -522,6 +541,7 @@ def main() -> int:
             pack_name=args.pack,
             artifacts_root=args.artifacts_root,
             continue_on_error=not args.no_continue_on_error,
+                mr_sigma_entry=float(args.mr_sigma_entry),
             mr_soft_range_impulse_k=args.mr_soft_impulse_k if args.mr_soft_impulse_k is not None else args.mr_soft_range_impulse_k,
         )
         print("\nThroughput ablation complete. Run dirs:")
@@ -552,6 +572,7 @@ def main() -> int:
         artifacts_root=args.artifacts_root,
         continue_on_error=not args.no_continue_on_error,
         mr_reclaim_mode=args.mr_reclaim_mode,
+            mr_sigma_entry=float(args.mr_sigma_entry),
         mr_soft_impulse_k=soft_range_k,
         mr_dedupe_enabled=(args.mr_dedupe_enabled == "on"),
         mr_attempt_cap_enabled=(args.mr_attempt_cap_enabled == "on"),
@@ -579,6 +600,12 @@ def main() -> int:
         alloc_openproxy_high_impulse_threshold=float(getattr(args, "alloc_openproxy_high_impulse_threshold", config.ALLOC_OPENPROXY_HIGH_IMPULSE_THRESHOLD)),
         alloc_openproxy_min_persistence_when_high_impulse=max(0, int(getattr(args, "alloc_openproxy_min_persistence_when_high_impulse", config.ALLOC_OPENPROXY_MIN_PERSISTENCE_WHEN_HIGH_IMPULSE))),
         alloc_openproxy_medium_impulse_weak_persistence_filter_enabled=(getattr(args, "alloc_openproxy_medium_impulse_weak_persistence_filter_enabled", "off") == "on"),
+        alloc_openproxy_medium_impulse_decay_filter_enabled=(getattr(args, "alloc_openproxy_medium_impulse_decay_filter_enabled", "off") == "on"),
+        alloc_openproxy_medium_impulse_min_atr=float(getattr(args, "alloc_openproxy_medium_impulse_min_atr", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_ATR)),
+        alloc_openproxy_medium_impulse_max_atr=float(getattr(args, "alloc_openproxy_medium_impulse_max_atr", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX_ATR)),
+        alloc_openproxy_medium_impulse_min=float(getattr(args, "alloc_openproxy_medium_impulse_min", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN)),
+        alloc_openproxy_medium_impulse_max=float(getattr(args, "alloc_openproxy_medium_impulse_max", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MAX)),
+        alloc_openproxy_medium_impulse_min_persistence=max(0, int(getattr(args, "alloc_openproxy_medium_impulse_min_persistence", config.ALLOC_OPENPROXY_MEDIUM_IMPULSE_MIN_PERSISTENCE))),
         orb_enabled=(args.orb_enabled == "on"),
         orb_trigger_mode=args.orb_trigger_mode,
         orb_pullback_confirm_bars=max(1, int(args.orb_pullback_confirm_bars)),
@@ -605,6 +632,13 @@ def main() -> int:
         dyn_v3_day_headroom_down=float(args.dyn_v3_day_headroom_down),
         dyn_v3_trail_headroom_up=float(args.dyn_v3_trail_headroom_up),
         dyn_v3_trail_headroom_down=float(args.dyn_v3_trail_headroom_down),
+        dyn_v3_atr_traction_scale_enabled=(getattr(args, "dyn_v3_atr_traction_scale_enabled", "off") == "on"),
+        dyn_v3_atr_traction_baseline=float(getattr(args, "dyn_v3_atr_traction_baseline", config.DYN_V3_ATR_TRACTION_BASELINE)),
+        dyn_v3_atr_traction_min_scale=float(getattr(args, "dyn_v3_atr_traction_min_scale", config.DYN_V3_ATR_TRACTION_MIN_SCALE)),
+        dyn_v3_atr_traction_max_scale=float(getattr(args, "dyn_v3_atr_traction_max_scale", config.DYN_V3_ATR_TRACTION_MAX_SCALE)),
+        dyn_v3_consistency_brake_enabled=(getattr(args, "dyn_v3_consistency_brake_enabled", "off") == "on"),
+        dyn_v3_consistency_cap_pct=float(getattr(args, "dyn_v3_consistency_cap_pct", config.DYN_V3_CONSISTENCY_CAP_PCT)),
+        dyn_v3_consistency_loss_buffer_mult=float(getattr(args, "dyn_v3_consistency_loss_buffer_mult", config.DYN_V3_CONSISTENCY_LOSS_BUFFER_MULT)),
     )
     manifest = runner.run()
 

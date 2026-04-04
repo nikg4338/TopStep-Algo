@@ -74,6 +74,38 @@ def _make_v2_policy(**overrides: Any) -> SizingPolicy:
     ))
 
 
+def _make_v3_policy(**overrides: Any) -> SizingPolicy:
+    """Build a dynamic_v3 SizingPolicy with sensible defaults."""
+    return SizingPolicy(SizingConfig(
+        policy="dynamic_v3",
+        fixed_contracts=int(overrides.pop("fixed_contracts", 2)),
+        up_trail_headroom=float(overrides.pop("up_trail_headroom", 1400.0)),
+        up_day_headroom=float(overrides.pop("up_day_headroom", 700.0)),
+        down_trail_headroom=float(overrides.pop("down_trail_headroom", 1200.0)),
+        down_day_headroom=float(overrides.pop("down_day_headroom", 600.0)),
+        loss_streak_up_max=int(overrides.pop("loss_streak_up_max", 1)),
+        loss_streak_down_min=int(overrides.pop("loss_streak_down_min", 2)),
+        shock_loss_frac=float(overrides.pop("shock_loss_frac", 0.6)),
+        profit_lock=float(overrides.pop("profit_lock", 2000.0)),
+        daily_loss_limit=float(overrides.pop("daily_loss_limit", 1000.0)),
+        trail_dd_limit=float(overrides.pop("trail_dd_limit", 2000.0)),
+        v3_earned_traction=float(overrides.pop("v3_earned_traction", 75.0)),
+        v3_giveback_floor=float(overrides.pop("v3_giveback_floor", 25.0)),
+        v3_orb_upsize_allowed=bool(overrides.pop("v3_orb_upsize_allowed", False)),
+        v3_day_headroom_up=float(overrides.pop("v3_day_headroom_up", 800.0)),
+        v3_day_headroom_down=float(overrides.pop("v3_day_headroom_down", 600.0)),
+        v3_trail_headroom_up=float(overrides.pop("v3_trail_headroom_up", 1400.0)),
+        v3_trail_headroom_down=float(overrides.pop("v3_trail_headroom_down", 1200.0)),
+        v3_atr_traction_scale_enabled=bool(overrides.pop("v3_atr_traction_scale_enabled", False)),
+        v3_atr_traction_baseline=float(overrides.pop("v3_atr_traction_baseline", 12.0)),
+        v3_atr_traction_min_scale=float(overrides.pop("v3_atr_traction_min_scale", 0.75)),
+        v3_atr_traction_max_scale=float(overrides.pop("v3_atr_traction_max_scale", 1.25)),
+        v3_consistency_brake_enabled=bool(overrides.pop("v3_consistency_brake_enabled", False)),
+        v3_consistency_cap_pct=float(overrides.pop("v3_consistency_cap_pct", 0.50)),
+        v3_consistency_loss_buffer_mult=float(overrides.pop("v3_consistency_loss_buffer_mult", 2.0)),
+    ))
+
+
 def _write_trades_csv(path: Path, trades: list[dict]) -> None:
     """Write a minimal trades.csv with required columns."""
     if not trades:
@@ -758,6 +790,46 @@ class TestDynamicV2Integration:
 
     def test_apply_sizing_v2_with_earned_upsize(self):
         """apply_sizing_to_trades integration with v2 earned upsize."""
+
+
+class TestDynamicV3Enhancements:
+    def test_atr_scaled_traction_reduces_threshold_on_low_atr_days(self):
+        policy = _make_v3_policy(
+            v3_earned_traction=80.0,
+            v3_atr_traction_scale_enabled=True,
+            v3_atr_traction_baseline=12.0,
+            v3_atr_traction_min_scale=0.5,
+            v3_atr_traction_max_scale=1.5,
+        )
+        policy.decide_day_start("s1", "range", "mr", 1, session_atr_median=6.0)
+        assert policy._v3_effective_traction == 40.0
+        c = policy.on_trade(45.0)
+        assert c == 2
+        assert policy._v3_upsize_trigger == "traction"
+
+    def test_consistency_brake_blocks_first_trade_win_upsize(self):
+        policy = _make_v3_policy(
+            v3_consistency_brake_enabled=True,
+            v3_consistency_cap_pct=0.5,
+            v3_consistency_loss_buffer_mult=3.0,
+            v3_giveback_floor=25.0,
+        )
+        policy.equity = 200.0
+        policy.peak_equity = 200.0
+        policy.decide_day_start("s1", "range", "mr", 1, session_atr_median=10.0)
+        c = policy.on_trade(150.0)
+        assert c == 1
+        assert policy._v3_consistency_brake_blocked is True
+        assert policy._downshift_reason == "v3_consistency_brake"
+
+    def test_consistency_brake_flag_is_recorded_in_log(self):
+        policy = _make_v3_policy(v3_consistency_brake_enabled=True, v3_consistency_loss_buffer_mult=3.0)
+        policy.equity = 200.0
+        policy.peak_equity = 200.0
+        policy.decide_day_start("s1", "range", "mr", 1, session_atr_median=10.0)
+        policy.on_trade(150.0)
+        rec = policy.end_of_day()
+        assert rec.v3_consistency_brake_blocked is True
         policy = _make_v2_policy(earned_traction=100.0)
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = Path(tmpdir) / "trades.csv"

@@ -135,6 +135,7 @@ class MRSignalEngine:
         self,
         flow_filter: OrderFlowFilterBase | None = None,
         reclaim_mode: Literal["on", "off", "soft", "touch"] = "on",
+        sigma_entry: float = MR_SIGMA_ENTRY,
         soft_reclaim_range_impulse_k: float = MR_SOFT_RECLAIM_RANGE_IMPULSE_K,
         cooldown_bars: int = MR_COOLDOWN_BARS,
         max_attempts_per_side: int = MR_MAX_ATTEMPTS_PER_SIDE,
@@ -150,6 +151,8 @@ class MRSignalEngine:
         if reclaim_mode not in {"on", "off", "soft", "touch"}:
             raise ValueError("reclaim_mode must be 'on', 'off', 'soft', or 'touch'")
         self._reclaim_mode: Literal["on", "off", "soft", "touch"] = reclaim_mode
+        self._sigma_entry: float = max(0.1, float(sigma_entry))
+        self._sigma_extreme: float = max(self._sigma_entry, float(MR_SIGMA_EXTREME))
         self._soft_reclaim_range_impulse_k: float = max(0.0, float(soft_reclaim_range_impulse_k))
         self._cooldown_bars: int = max(0, int(cooldown_bars))
         self._max_attempts_per_side: int = max(1, int(max_attempts_per_side))
@@ -487,13 +490,13 @@ class MRSignalEngine:
         first_outside_candidate_side: str | None = None
         if not self._seen_first_eligible_bar:
             self._seen_first_eligible_bar = True
-            if abs(z_score) >= MR_SIGMA_ENTRY:
+            if abs(z_score) >= self._sigma_entry:
                 self._first_eligible_bar_outside += 1
                 if self._first_outside_enabled:
-                    first_outside_candidate_side = "BUY" if z_score <= -MR_SIGMA_ENTRY else "SELL"
+                    first_outside_candidate_side = "BUY" if z_score <= -self._sigma_entry else "SELL"
 
         if prev_z_score is not None:
-            if abs(prev_z_score) < MR_SIGMA_ENTRY <= abs(z_score):
+            if abs(prev_z_score) < self._sigma_entry <= abs(z_score):
                 self._z_cross_inside_to_outside += 1
                 self._drop_ledger["z_cross_events"] += 1
                 self._z_cross_time_buckets[bucket] = self._z_cross_time_buckets.get(bucket, 0) + 1
@@ -501,13 +504,13 @@ class MRSignalEngine:
                 range_imp = (bar.high - bar.low) / atr if atr > 0 else 0.0
                 self._cross_body_impulse_abs_values.append(body_abs)
                 self._cross_range_impulse_values.append(range_imp)
-            elif abs(prev_z_score) >= MR_SIGMA_ENTRY > abs(z_score):
+            elif abs(prev_z_score) >= self._sigma_entry > abs(z_score):
                 self._z_cross_outside_to_inside += 1
 
         # Track excursion activation
-        if z_score <= -MR_SIGMA_ENTRY:
+        if z_score <= -self._sigma_entry:
             self._long_excursion_active = True
-        if z_score >= MR_SIGMA_ENTRY:
+        if z_score >= self._sigma_entry:
             self._short_excursion_active = True
 
         # Reset excursion states when mean-reverted enough or VWAP touched
@@ -517,7 +520,7 @@ class MRSignalEngine:
             self._long_excursion_traded = False
             self._short_excursion_traded = False
 
-        reset_threshold = max(0.0, MR_SIGMA_ENTRY - self._touch_latch_reset_buffer)
+        reset_threshold = max(0.0, self._sigma_entry - self._touch_latch_reset_buffer)
         if abs(z_score) <= reset_threshold:
             self._long_touch_latch_armed = True
             self._short_touch_latch_armed = True
@@ -525,12 +528,12 @@ class MRSignalEngine:
         # ── Cluster reset: if |z| drops below threshold, reset attempts ──
         if MR_CLUSTER_RESET_ENABLED:
             abs_z = abs(z_score)
-            in_zone = abs_z >= MR_SIGMA_ENTRY
+            in_zone = abs_z >= self._sigma_entry
 
             if MR_CLUSTER_RESET_MODE == "retrace":
-                if z_score <= -MR_SIGMA_ENTRY:
+                if z_score <= -self._sigma_entry:
                     self._cluster_peak_long_z = max(self._cluster_peak_long_z, abs_z)
-                if z_score >= MR_SIGMA_ENTRY:
+                if z_score >= self._sigma_entry:
                     self._cluster_peak_short_z = max(self._cluster_peak_short_z, abs_z)
 
                 if (
@@ -580,29 +583,29 @@ class MRSignalEngine:
         if candidate_side is None and prev_z_score is not None:
             if self._reclaim_mode == "on":
                 # Reclaim ON: signal only when price re-enters from an excursion.
-                if prev_z_score <= -MR_SIGMA_ENTRY and z_score > -MR_SIGMA_ENTRY:
+                if prev_z_score <= -self._sigma_entry and z_score > -self._sigma_entry:
                     candidate_side = "BUY"
-                    band_hit = MR_SIGMA_EXTREME if prev_z_score <= -MR_SIGMA_EXTREME else MR_SIGMA_ENTRY
-                elif prev_z_score >= MR_SIGMA_ENTRY and z_score < MR_SIGMA_ENTRY:
+                    band_hit = self._sigma_extreme if prev_z_score <= -self._sigma_extreme else self._sigma_entry
+                elif prev_z_score >= self._sigma_entry and z_score < self._sigma_entry:
                     candidate_side = "SELL"
-                    band_hit = MR_SIGMA_EXTREME if prev_z_score >= MR_SIGMA_EXTREME else MR_SIGMA_ENTRY
+                    band_hit = self._sigma_extreme if prev_z_score >= self._sigma_extreme else self._sigma_entry
             elif self._reclaim_mode in {"off", "soft"}:
                 # Reclaim OFF: threshold cross from inside to outside (no reclaim confirmation).
-                if prev_z_score > -MR_SIGMA_ENTRY and z_score <= -MR_SIGMA_ENTRY:
+                if prev_z_score > -self._sigma_entry and z_score <= -self._sigma_entry:
                     candidate_side = "BUY"
-                    band_hit = MR_SIGMA_EXTREME if z_score <= -MR_SIGMA_EXTREME else MR_SIGMA_ENTRY
-                elif prev_z_score < MR_SIGMA_ENTRY and z_score >= MR_SIGMA_ENTRY:
+                    band_hit = self._sigma_extreme if z_score <= -self._sigma_extreme else self._sigma_entry
+                elif prev_z_score < self._sigma_entry and z_score >= self._sigma_entry:
                     candidate_side = "SELL"
-                    band_hit = MR_SIGMA_EXTREME if z_score >= MR_SIGMA_EXTREME else MR_SIGMA_ENTRY
+                    band_hit = self._sigma_extreme if z_score >= self._sigma_extreme else self._sigma_entry
 
         if candidate_side is None and self._reclaim_mode == "touch":
-            if z_score <= -MR_SIGMA_ENTRY and self._long_touch_latch_armed:
+            if z_score <= -self._sigma_entry and self._long_touch_latch_armed:
                 candidate_side = "BUY"
-                band_hit = MR_SIGMA_EXTREME if z_score <= -MR_SIGMA_EXTREME else MR_SIGMA_ENTRY
+                band_hit = self._sigma_extreme if z_score <= -self._sigma_extreme else self._sigma_entry
                 self._long_touch_latch_armed = False
-            elif z_score >= MR_SIGMA_ENTRY and self._short_touch_latch_armed:
+            elif z_score >= self._sigma_entry and self._short_touch_latch_armed:
                 candidate_side = "SELL"
-                band_hit = MR_SIGMA_EXTREME if z_score >= MR_SIGMA_EXTREME else MR_SIGMA_ENTRY
+                band_hit = self._sigma_extreme if z_score >= self._sigma_extreme else self._sigma_entry
                 self._short_touch_latch_armed = False
 
         if candidate_side is None:

@@ -57,3 +57,13 @@ def test_load_v1_2_preset_has_no_v1_3_medium_impulse_override():
     preset = _load_preset("mainline_combine_v1_2_orb_selectivity")
     assert preset["allocator_policy"] == "open_proxy_v1"
     assert preset.get("alloc_openproxy_medium_impulse_weak_persistence_filter_enabled", "off") == "off"
+
+
+def test_load_v1_4_execution_bridge_preset_enables_new_filters_and_sizing():
+    preset = _load_preset("mainline_combine_v1_4_execution_bridge")
+    assert preset["allocator_policy"] == "open_proxy_v1"
+    assert preset["alloc_openproxy_medium_impulse_decay_filter_enabled"] == "on"
+    assert preset["alloc_openproxy_medium_impulse_min_atr"] == 8.0
+    assert preset["alloc_openproxy_medium_impulse_max_atr"] == 15.0
+    assert preset["dyn_v3_atr_traction_scale_enabled"] == "on"
+    assert preset["dyn_v3_consistency_brake_enabled"] == "on"
