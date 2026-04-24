@@ -35,6 +35,7 @@ from __future__ import annotations
 import argparse
 import time
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -57,6 +58,33 @@ from validation.open_proxy_allocator import (
     decide as open_proxy_decide,
 )
 from visualization.replay_dashboard import ReplayDashboard
+
+
+def _run_exit_simulator_for_artifact(
+    artifact_path: str | Path,
+    *,
+    replay_start: str,
+    replay_end: str,
+    symbol: str,
+) -> int:
+    """Run the MR exit simulator for a report artifact and return trade count.
+
+    The replay report exports files into the session artifact directory. The
+    simulator's public API operates on that directory, not on the report file
+    itself.
+    """
+    from simulation.mr_exit_simulator import MRExitSimulator
+
+    artifact = Path(artifact_path)
+    session_dir = artifact if artifact.is_dir() else artifact.parent
+    sim = MRExitSimulator()
+    trades = sim.simulate_from_replay_artifacts(
+        session_dir=str(session_dir),
+        replay_start=replay_start,
+        replay_end=replay_end,
+        symbol=symbol,
+    )
+    return len(trades)
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -1430,17 +1458,12 @@ def run_debug_replay(args: argparse.Namespace) -> int:
 
         # ── Run Exit Simulator ──────────────────────────────────────────────
         try:
-            from simulation.mr_exit_simulator import MRExitSimulator
-            sim = MRExitSimulator()
-            run_session = getattr(sim, "run_session", None)
-            if callable(run_session):
-                diag = run_session(artifact_path)
-            else:
-                run = getattr(sim, "run", None)
-                if not callable(run):
-                    raise AttributeError("MRExitSimulator has neither 'run_session' nor 'run'")
-                diag = run(artifact_path)
-            trades_emitted = diag.get("trades_emitted", 0) if isinstance(diag, dict) else 0
+            trades_emitted = _run_exit_simulator_for_artifact(
+                artifact_path,
+                replay_start=args.start,
+                replay_end=args.end,
+                symbol=args.symbol,
+            )
             print(f"  Exit sim ran  → {trades_emitted} trades generated")
         except Exception as exc:
             print(f"  [exit_sim] ERROR: {type(exc).__name__}: {exc}")

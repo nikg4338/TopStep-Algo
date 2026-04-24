@@ -231,6 +231,7 @@ def run_mr_approval_calibration(
     soft_range_impulse_k: float,
     engine_mode: str = "mr",
     allocator_policy: str = "none",
+    report_label: str = "mr_approval_calibration",
 ) -> dict[str, Any]:
     pack = load_pack(pack_name)
     candidates = build_candidate_grid(
@@ -245,7 +246,7 @@ def run_mr_approval_calibration(
     )
     rows: list[dict[str, Any]] = []
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-    report_dir = output_root / f"mr_approval_calibration_{pack_name}_{ts}"
+    report_dir = output_root / f"{report_label}_{pack_name}_{ts}"
     report_dir.mkdir(parents=True, exist_ok=True)
 
     for candidate in candidates:
@@ -281,6 +282,7 @@ def run_mr_approval_calibration(
     summary = {
         "generated": datetime.now(timezone.utc).isoformat(),
         "pack_name": pack_name,
+        "report_label": report_label,
         "artifacts_root": str(artifacts_root),
         "engine_mode": engine_mode,
         "allocator_policy": allocator_policy,

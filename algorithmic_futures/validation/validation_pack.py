@@ -172,6 +172,34 @@ _GENERATED_PACK_SPECS: dict[str, dict] = {
     },
 }
 
+_SESSION_ID_PACK_SPECS: dict[str, dict[str, Any]] = {
+    "route_sensitivity_16": {
+        "description": (
+            "Route-sensitive 16-session pack — medium-impulse boundary days plus "
+            "clean ORB controls sourced from extended_60d"
+        ),
+        "source_pack": "extended_60d",
+        "session_ids": [
+            "session_20251204",
+            "session_20251208",
+            "session_20251215",
+            "session_20251217",
+            "session_20251218",
+            "session_20251223",
+            "session_20251229",
+            "session_20260108",
+            "session_20260120",
+            "session_20260202",
+            "session_20260209",
+            "session_20260210",
+            "session_20260211",
+            "session_20260212",
+            "session_20260213",
+            "session_20260112",
+        ],
+    },
+}
+
 _TREND20_SOURCE_RUN_ID = "trend20_adx_20260226_232222"
 
 
@@ -218,6 +246,17 @@ def _build_trend20_pack(source_run_id: str = _TREND20_SOURCE_RUN_ID) -> Validati
     )
 
 
+def _build_session_id_pack(pack_name: str) -> ValidationPack:
+    spec = _SESSION_ID_PACK_SPECS[pack_name]
+    source_pack = load_pack(str(spec["source_pack"]))
+    return _pack_from_session_ids(
+        pack_id=pack_name,
+        description=str(spec["description"]),
+        source_pack=source_pack,
+        session_ids=[str(sid) for sid in spec["session_ids"]],
+    )
+
+
 # ═══════════════════════════════════════════════════════════════════════
 #  Pack loader
 # ═══════════════════════════════════════════════════════════════════════
@@ -248,10 +287,18 @@ def load_pack(pack_name: str) -> ValidationPack:
             end_date=spec["end_date"],
         )
 
+    if pack_name in _SESSION_ID_PACK_SPECS:
+        return _build_session_id_pack(pack_name)
+
     if pack_name == "trend20":
         return _build_trend20_pack()
 
-    available = sorted(set(BUILTIN_PACKS.keys()) | set(_GENERATED_PACK_SPECS.keys()) | {"trend20"})
+    available = sorted(
+        set(BUILTIN_PACKS.keys())
+        | set(_GENERATED_PACK_SPECS.keys())
+        | set(_SESSION_ID_PACK_SPECS.keys())
+        | {"trend20"}
+    )
     raise ValueError(
         f"Unknown pack '{pack_name}'. Available packs: {', '.join(available)}"
     )

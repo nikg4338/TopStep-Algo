@@ -39,6 +39,7 @@ def _load_preset(name: str) -> dict:
 
     s = preset.get("sizing", {})
     t = preset.get("trend_engine", {})
+    r = preset.get("range_engine", {})
     a = preset.get("allocator", {})
     policy = normalize_allocator_policy(a.get("policy", "v2"))
     overrides = {
@@ -58,8 +59,16 @@ def _load_preset(name: str) -> dict:
         "engine_mode": "both",
         "allocator_policy": policy,
         "orb_enabled": "on",
-        "mr_reclaim_mode": "off",
-        "mr_regime_enabled": "on",
+        "mr_sigma_entry": r.get("sigma_entry", config.MR_SIGMA_ENTRY),
+        "mr_reclaim_mode": r.get("reclaim_mode", "off"),
+        "mr_soft_range_impulse_k": r.get("soft_range_impulse_k", config.MR_SOFT_RECLAIM_RANGE_IMPULSE_K),
+        "mr_cooldown_bars": r.get("cooldown_bars", config.MR_COOLDOWN_BARS),
+        "mr_first_outside_enabled": "on" if r.get("first_outside_enabled", config.MR_FIRST_OUTSIDE_ENABLED) else "off",
+        "mr_dedupe_enabled": "on" if r.get("dedupe_enabled", config.MR_EXCURSION_DEDUPE_ENABLED) else "off",
+        "mr_attempt_cap_enabled": "on" if r.get("attempt_cap_enabled", True) else "off",
+        "mr_regime_enabled": "on" if r.get("regime_enabled", True) else "off",
+        "mr_dedupe_window_bars": r.get("dedupe_window_bars", config.MR_DEDUPE_WINDOW_BARS),
+        "mr_dedupe_min_delta_z": r.get("dedupe_min_delta_z", config.MR_DEDUPE_MIN_DELTA_Z),
         "allocator_v1_adx_threshold": a.get("adx_trend_open_threshold", 25.0),
         "allocator_v2_trend_open_threshold": a.get("adx_trend_open_threshold", 25.0),
         "allocator_v2_rising_threshold": a.get("adx_rising_min", 20.0),

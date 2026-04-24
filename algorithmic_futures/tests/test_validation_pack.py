@@ -57,6 +57,18 @@ class TestLoadPack:
         assert pack.sessions[0].session_id == "session_20251103"
         assert pack.sessions[-1].session_id == "session_20251128"
 
+    def test_load_pack_route_sensitivity_session_id_pack(self):
+        """Route sensitivity pack resolves to the curated threshold-sensitive sessions."""
+        pack = load_pack("route_sensitivity_16")
+        assert isinstance(pack, ValidationPack)
+        assert pack.pack_id == "route_sensitivity_16"
+        assert len(pack.sessions) == 16
+        assert pack.sessions[0].session_id == "session_20251204"
+        assert pack.sessions[-1].session_id == "session_20260112"
+        session_ids = [session.session_id for session in pack.sessions]
+        assert "session_20260209" in session_ids
+        assert "session_20260212" in session_ids
+
 
 # ═══════════════════════════════════════════════════════════════════════
 #  Dataclass defaults
