@@ -43,6 +43,13 @@ DAILY_LOSS_LIMIT_EXTERNAL: int = 1_000   # Topstep hard daily loss
 DAILY_LOSS_LIMIT_INTERNAL: int = 240     # Our internal halt (5-6 losses)
 DAILY_PROFIT_HALT: int         = 1_200   # Consistency protection cap
 MLL_PROXIMITY_BUFFER: int      = 400     # Reduce risk when within $400 of MLL
+HALT_ON_PASS_STATE_REACHED: bool = True  # Halt new entries once stopping now would pass Combine
+PRETRADE_MLL_HEADROOM_MIN: float = 200.0  # Hard floor: reject new entries when headroom <= this value
+PRETRADE_MLL_PROJECTED_RISK_FRACTION: float = 1.0  # Max projected loss as fraction of current MLL headroom
+PRETRADE_DAILY_LOSS_BUDGET_MIN: float = 0.0  # Hard floor: reject entries when remaining daily loss budget <= this
+PRETRADE_DAILY_RISK_BUDGET_FRACTION: float = 1.0  # Max projected loss as fraction of remaining daily loss budget
+CONSISTENCY_CAP_PROJECTED_RISK_FRACTION: float = 1.0  # Fraction of remaining safe consistency room usable by next trade
+CONSISTENCY_CAP_RISK_MODE: str = "halt"  # "halt" blocks entries, "reduce" forces minimum-risk sizing
 
 # Consistency caps by mode
 CONSISTENCY_CAP: dict[str, float] = {

@@ -296,3 +296,46 @@ class TestBreakerCheckResultAPI:
         assert event.breaker == BreakerType.DAILY_LOSS
         assert event.timestamp  # non-empty string
         assert event.message  # non-empty string
+
+
+class TestCombinePreTradeGuards:
+    def test_pass_state_reached_halts(self, cb):
+        result = _check_normal(
+            cb,
+            cumulative_pnl=3_100.0,
+            daily_pnl=100.0,
+            current_best_day_pnl=1_200.0,
+        )
+        assert result.allowed is False
+        assert "PASS_STATE_REACHED" in result.reasons
+
+    def test_mll_headroom_too_low_halts(self, cb):
+        result = _check_normal(
+            cb,
+            cumulative_pnl=-1_850.0,
+            account_balance=48_150.0,
+            account_high_water_mark=50_000.0,
+            projected_trade_risk=20.0,
+        )
+        assert result.allowed is False
+        assert "MLL_HEADROOM_TOO_LOW" in result.reasons
+
+    def test_consistency_cap_risk_halts(self, cb):
+        result = _check_normal(
+            cb,
+            daily_pnl=1_495.0,
+            cumulative_pnl=2_000.0,
+            current_best_day_pnl=1_450.0,
+            projected_trade_risk=10.0,
+        )
+        assert result.allowed is False
+        assert "CONSISTENCY_CAP_RISK" in result.reasons
+
+    def test_daily_loss_budget_low_halts(self, cb):
+        result = _check_normal(
+            cb,
+            daily_pnl=-230.0,
+            projected_trade_risk=20.0,
+        )
+        assert result.allowed is False
+        assert "DAILY_LOSS_BUDGET_LOW" in result.reasons

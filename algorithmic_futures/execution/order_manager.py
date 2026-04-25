@@ -92,6 +92,7 @@ class SessionState:
     account_high_water_mark: float = 0.0
     account_balance: float = 0.0
     challenge_status: str = "IN_PROGRESS"
+    best_day_pnl: float = 0.0
     open_position: dict | None = None  # serialised position snapshot
     pending_exit_orders: list[str] = field(default_factory=list)
     date: str = ""
@@ -159,6 +160,8 @@ class OrderManager:
         Returns a TradeRecord on fill, or None if rejected / timed-out.
         """
         now = datetime.now(ET)
+        stop_distance = abs(entry_price - stop_price)
+        projected_trade_risk = stop_distance * POINT_VALUE
 
         # ── Step 1: circuit breaker gate ────────────────────────────────
         check = self.breakers.check_all(
@@ -169,15 +172,18 @@ class OrderManager:
             daily_trade_count=self.state.daily_trade_count,
             active_strategy=strategy,
             current_regime=regime,
+            current_best_day_pnl=self.state.best_day_pnl,
+            projected_trade_risk=projected_trade_risk,
             now=now,
         )
         if not check.allowed:
             logger.warning(
                 "Entry REJECTED by circuit breakers: %s", check.reasons
             )
+            breaker_reason = self._select_breaker_reason(check.reasons)
             self._record_rejection(
                 stage="circuit_breakers",
-                reason="; ".join(check.reasons),
+                reason=breaker_reason,
                 metadata={"strategy": strategy, "regime": regime.name},
             )
             return None
@@ -193,7 +199,6 @@ class OrderManager:
             return None
 
         # ── Step 2: position sizing ─────────────────────────────────────
-        stop_distance = abs(entry_price - stop_price)
         account_risk = self._account_risk_snapshot()
         sizing = self.sizer.calculate_with_risk_gate(
             stop_distance_points=stop_distance,
@@ -336,6 +341,7 @@ class OrderManager:
 
         if self.state.account_balance > self.state.account_high_water_mark:
             self.state.account_high_water_mark = self.state.account_balance
+        self.state.best_day_pnl = max(self.state.best_day_pnl, self.state.daily_pnl)
 
         # Cancel any remaining exit orders
         for oid in self.state.pending_exit_orders:
@@ -548,7 +554,7 @@ class OrderManager:
             {
                 "timestamp": datetime.now(ET).isoformat(),
                 "stage": stage,
-                "reason": reason,
+                "reason": self._canonical_rejection_reason(reason),
                 "metadata": metadata or {},
             }
         )
@@ -564,3 +570,28 @@ class OrderManager:
             if t.trade_id == trade_id:
                 return t
         return None
+
+    def _canonical_rejection_reason(self, reason: str) -> str:
+        if reason.startswith("MIN_CONTRACT_RISK_EXCEEDS_") or reason.startswith(
+            "PROJECTED_TRADE_RISK_EXCEEDS_MLL_HEADROOM"
+        ):
+            return CircuitBreakers.MIN_CONTRACT_RISK_TOO_HIGH
+        if reason.startswith("PROJECTED_TRADE_RISK_EXCEEDS_DAILY_LOSS_BUDGET") or reason.startswith(
+            "MIN_CONTRACT_RISK_EXCEEDS_DAILY_LOSS_BUDGET"
+        ):
+            return CircuitBreakers.DAILY_LOSS_BUDGET_LOW
+        return reason
+
+    def _select_breaker_reason(self, reasons: list[str]) -> str:
+        priority = [
+            CircuitBreakers.PASS_STATE_REACHED,
+            CircuitBreakers.MLL_HEADROOM_TOO_LOW,
+            CircuitBreakers.CONSISTENCY_CAP_RISK,
+            CircuitBreakers.DAILY_LOSS_BUDGET_LOW,
+        ]
+        for code in priority:
+            if code in reasons:
+                return code
+        if reasons:
+            return reasons[0]
+        return "CIRCUIT_BREAKER_REJECT"

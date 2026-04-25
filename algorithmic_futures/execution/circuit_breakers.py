@@ -26,18 +26,26 @@ import pytz
 
 from config import (
     ACCOUNT_MODE,
+    CONSISTENCY_CAP_PROJECTED_RISK_FRACTION,
+    CONSISTENCY_CAP_RISK_MODE,
     CONSISTENCY_CAP,
     DAILY_LOSS_LIMIT_EXTERNAL,
     DAILY_LOSS_LIMIT_INTERNAL,
     DAILY_PROFIT_HALT,
     EOD_CLOSE,
+    HALT_ON_PASS_STATE_REACHED,
     LAST_ENTRY_CUTOFF,
     MLL_PROXIMITY_BUFFER,
     ORB_TRADES_PER_DAY,
+    PRETRADE_DAILY_LOSS_BUDGET_MIN,
+    PRETRADE_DAILY_RISK_BUDGET_FRACTION,
+    PRETRADE_MLL_HEADROOM_MIN,
+    PRETRADE_MLL_PROJECTED_RISK_FRACTION,
     TIMEZONE,
     VWAP_TRADES_PER_DAY,
 )
 from regime.regime_state import BreakerType, RegimeState
+from risk.combine_pass_state import CombinePassStateCalculator
 from risk.account_state import AccountRiskSnapshot
 
 logger = logging.getLogger(__name__)
@@ -77,6 +85,13 @@ class CircuitBreakers:
     def __init__(self, account_mode: str = ACCOUNT_MODE) -> None:
         self.account_mode = account_mode
         self._events: list[BreakerEvent] = []  # session log
+        self._combine_pass_calc = CombinePassStateCalculator()
+
+    PASS_STATE_REACHED = "PASS_STATE_REACHED"
+    MLL_HEADROOM_TOO_LOW = "MLL_HEADROOM_TOO_LOW"
+    CONSISTENCY_CAP_RISK = "CONSISTENCY_CAP_RISK"
+    DAILY_LOSS_BUDGET_LOW = "DAILY_LOSS_BUDGET_LOW"
+    MIN_CONTRACT_RISK_TOO_HIGH = "MIN_CONTRACT_RISK_TOO_HIGH"
 
     @property
     def events(self) -> list[BreakerEvent]:
@@ -97,6 +112,8 @@ class CircuitBreakers:
         daily_trade_count: int,
         active_strategy: str,  # "VWAP" or "ORB"
         current_regime: RegimeState,
+        current_best_day_pnl: float = 0.0,
+        projected_trade_risk: float = 0.0,
         now: datetime | None = None,
     ) -> BreakerCheckResult:
         """Evaluate all 8 circuit breakers. Returns ``BreakerCheckResult``."""
@@ -138,6 +155,7 @@ class CircuitBreakers:
                 ))
 
         # 5. MLL proximity warning (sizing reduction, not a hard halt)
+        account_risk: AccountRiskSnapshot | None = None
         if account_high_water_mark > 0 or account_balance > 0:
             account_risk = AccountRiskSnapshot(
                 account_balance=account_balance,
@@ -152,6 +170,76 @@ class CircuitBreakers:
                     "MLL proximity: floor $%.0f, distance-to-MLL $%.0f <= $%d",
                     account_risk.current_mll_floor, distance_to_mll, MLL_PROXIMITY_BUFFER,
                 )
+
+        # 5b. Combine pass-state / pre-trade risk guards
+        pass_state = self._combine_pass_calc.calculate(
+            current_cumulative_profit=cumulative_pnl,
+            current_best_day=current_best_day_pnl,
+            todays_realized_pnl=daily_pnl,
+            todays_unrealized_pnl=0.0,
+            account_high_water_mark=account_high_water_mark if account_high_water_mark > 0 else None,
+            halt_when_passed=HALT_ON_PASS_STATE_REACHED,
+        )
+        if HALT_ON_PASS_STATE_REACHED and pass_state.stopping_now_would_pass:
+            active.append(self._event(
+                BreakerType.DAILY_PROFIT,
+                pass_state.current_cumulative_profit,
+                pass_state.required_total_profit_under_consistency,
+                self.PASS_STATE_REACHED,
+            ))
+
+        if pass_state.mll_headroom <= PRETRADE_MLL_HEADROOM_MIN:
+            active.append(self._event(
+                BreakerType.MLL_PROXIMITY,
+                pass_state.mll_headroom,
+                PRETRADE_MLL_HEADROOM_MIN,
+                self.MLL_HEADROOM_TOO_LOW,
+            ))
+
+        projected_risk = max(0.0, projected_trade_risk)
+        if projected_risk > 0 and pass_state.mll_headroom > 0:
+            max_mll_projected_risk = pass_state.mll_headroom * PRETRADE_MLL_PROJECTED_RISK_FRACTION
+            if projected_risk > max_mll_projected_risk:
+                active.append(self._event(
+                    BreakerType.MLL_PROXIMITY,
+                    projected_risk,
+                    max_mll_projected_risk,
+                    self.MLL_HEADROOM_TOO_LOW,
+                ))
+
+        remaining_daily_budget = max(0.0, DAILY_LOSS_LIMIT_INTERNAL + daily_pnl)
+        if remaining_daily_budget <= PRETRADE_DAILY_LOSS_BUDGET_MIN:
+            active.append(self._event(
+                BreakerType.DAILY_LOSS,
+                remaining_daily_budget,
+                PRETRADE_DAILY_LOSS_BUDGET_MIN,
+                self.DAILY_LOSS_BUDGET_LOW,
+            ))
+        if projected_risk > 0 and remaining_daily_budget > 0:
+            max_daily_projected_risk = remaining_daily_budget * PRETRADE_DAILY_RISK_BUDGET_FRACTION
+            if projected_risk > max_daily_projected_risk:
+                active.append(self._event(
+                    BreakerType.DAILY_LOSS,
+                    projected_risk,
+                    max_daily_projected_risk,
+                    self.DAILY_LOSS_BUDGET_LOW,
+                ))
+
+        if projected_risk > 0:
+            max_consistency_risk = (
+                pass_state.remaining_safe_profit_today_before_target_inflation
+                * CONSISTENCY_CAP_PROJECTED_RISK_FRACTION
+            )
+            if projected_risk > max_consistency_risk:
+                if CONSISTENCY_CAP_RISK_MODE == "reduce":
+                    mll_proximity = True
+                else:
+                    active.append(self._event(
+                        BreakerType.CONSISTENCY_CAP,
+                        projected_risk,
+                        max_consistency_risk,
+                        self.CONSISTENCY_CAP_RISK,
+                    ))
 
         # 6. Trade count cap
         max_trades = VWAP_TRADES_PER_DAY if active_strategy.upper() == "VWAP" else ORB_TRADES_PER_DAY
