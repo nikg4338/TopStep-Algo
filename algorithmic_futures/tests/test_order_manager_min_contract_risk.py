@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Any
 
 from execution.api_client import OrderResponse
-from execution.circuit_breakers import BreakerCheckResult
+from execution.circuit_breakers import BreakerCheckResult, CircuitBreakers
 from execution.order_manager import OrderManager, SessionState
 from regime.regime_state import OrderSide, RegimeState
 from risk.position_sizer import PositionSizer
@@ -75,7 +75,7 @@ def test_order_manager_records_min_contract_risk_rejection() -> None:
     )
 
     assert trade is None
-    assert "MIN_CONTRACT_RISK_EXCEEDS_TRADE_RISK" in manager.last_rejection_reason
+    assert manager.last_rejection_reason == CircuitBreakers.MIN_CONTRACT_RISK_TOO_HIGH
     assert manager.rejection_log[-1]["stage"] == "position_sizer"
     assert api.positions_checked is False
     assert api.orders_placed == []
@@ -127,7 +127,7 @@ def test_order_manager_rejects_trade_with_tight_mll_headroom() -> None:
     )
 
     assert trade is None
-    assert "MIN_CONTRACT_RISK_EXCEEDS_MLL_HEADROOM" in manager.last_rejection_reason
+    assert manager.last_rejection_reason == CircuitBreakers.MIN_CONTRACT_RISK_TOO_HIGH
     assert manager.rejection_log[-1]["metadata"]["remaining_mll_headroom"] == 100.0
     assert manager.rejection_log[-1]["metadata"]["current_mll_floor"] == 48_000.0
     assert api.positions_checked is False
@@ -154,7 +154,7 @@ def test_order_manager_rejection_reason_is_clear_for_projected_mll_risk() -> Non
     )
 
     assert trade is None
-    assert "PROJECTED_TRADE_RISK_EXCEEDS_MLL_HEADROOM" in manager.last_rejection_reason
+    assert manager.last_rejection_reason == CircuitBreakers.MIN_CONTRACT_RISK_TOO_HIGH
     assert manager.rejection_log[-1]["metadata"]["projected_trade_risk"] == 20.0
     assert manager.rejection_log[-1]["metadata"]["mll_headroom_safety_fraction"] == 0.10
     assert api.positions_checked is False
