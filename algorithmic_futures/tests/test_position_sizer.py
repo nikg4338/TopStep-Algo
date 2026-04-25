@@ -56,23 +56,23 @@ class TestCoreSizing:
         assert contracts * 1.0 * 5.0 <= 40.0
         assert contracts >= 1
 
-    def test_large_stop_returns_1(self, sizer):
-        """A very large stop relative to risk → floor to 1 contract."""
+    def test_large_stop_rejects(self, sizer):
+        """A very large stop relative to risk cannot force 1 contract."""
         contracts = sizer.calculate(stop_distance_points=100.0)
-        assert contracts == 1
+        assert contracts == 0
 
 
 # ── Stop distance edge cases ───────────────────────────────────────────
 
 
 class TestStopDistanceEdgeCases:
-    def test_zero_stop_returns_1(self, sizer):
-        """stop_distance <= 0 → safe default of 1 contract."""
-        assert sizer.calculate(stop_distance_points=0.0) == 1
+    def test_zero_stop_rejects(self, sizer):
+        """stop_distance <= 0 is invalid and rejects sizing."""
+        assert sizer.calculate(stop_distance_points=0.0) == 0
 
-    def test_negative_stop_returns_1(self, sizer):
-        """Negative stop distance → safe default of 1 contract."""
-        assert sizer.calculate(stop_distance_points=-5.0) == 1
+    def test_negative_stop_rejects(self, sizer):
+        """Negative stop distance is invalid and rejects sizing."""
+        assert sizer.calculate(stop_distance_points=-5.0) == 0
 
 
 # ── MLL proximity ──────────────────────────────────────────────────────
@@ -104,20 +104,75 @@ class TestMLLProximity:
         assert contracts_normal == contracts_prox
 
 
-# ── Never zero or negative ─────────────────────────────────────────────
+# ── Minimum-contract risk gate ─────────────────────────────────────────
 
 
-class TestMinimumContracts:
-    def test_never_returns_zero(self, sizer):
-        """Contract count is always >= 1."""
-        for stop in [0.0, -1.0, 0.01, 100.0, 1000.0]:
+class TestMinimumContractRiskGate:
+    def test_normal_stop_allows_1_contract(self, sizer):
+        """$20 budget / 4-point MES stop ($20/contract) = 1 contract."""
+        result = sizer.calculate_with_risk_gate(stop_distance_points=4.0)
+
+        assert result.allowed is True
+        assert result.quantity == 1
+        assert result.risk_per_contract == pytest.approx(20.0)
+        assert result.rejection_reason == ""
+
+    def test_wide_stop_rejects_trade(self, sizer):
+        """A 100-point MES stop risks $500 for one contract, above a $20 budget."""
+        result = sizer.calculate_with_risk_gate(stop_distance_points=100.0)
+
+        assert result.allowed is False
+        assert result.quantity == 0
+        assert "MIN_CONTRACT_RISK_EXCEEDS_TRADE_RISK" in result.rejection_reason
+
+    def test_low_daily_loss_headroom_rejects_trade(self, sizer):
+        """A normal 1-contract stop is rejected when daily loss budget is too low."""
+        result = sizer.calculate_with_risk_gate(
+            stop_distance_points=4.0,
+            remaining_daily_loss_budget=10.0,
+        )
+
+        assert result.allowed is False
+        assert result.quantity == 0
+        assert "MIN_CONTRACT_RISK_EXCEEDS_DAILY_LOSS_BUDGET" in result.rejection_reason
+
+    def test_low_mll_headroom_rejects_trade(self, sizer):
+        """A normal 1-contract stop is rejected when MLL headroom is too low."""
+        result = sizer.calculate_with_risk_gate(
+            stop_distance_points=4.0,
+            remaining_mll_headroom=10.0,
+        )
+
+        assert result.allowed is False
+        assert result.quantity == 0
+        assert "MIN_CONTRACT_RISK_EXCEEDS_MLL_HEADROOM" in result.rejection_reason
+
+    def test_projected_trade_risk_rejects_against_mll_fraction(self, sizer):
+        """The MLL gate uses projected sized-trade risk, not only one-contract risk."""
+        result = sizer.calculate_with_risk_gate(
+            stop_distance_points=1.0,
+            remaining_mll_headroom=100.0,
+            mll_headroom_safety_fraction=0.10,
+        )
+
+        assert result.allowed is False
+        assert result.quantity == 0
+        assert result.projected_trade_risk == pytest.approx(20.0)
+        assert "PROJECTED_TRADE_RISK_EXCEEDS_MLL_HEADROOM" in result.rejection_reason
+
+    def test_rejected_quantity_is_not_negative(self, sizer):
+        for stop in [-10.0, -0.25, 0.0, 100.0]:
             contracts = sizer.calculate(stop_distance_points=stop)
-            assert contracts >= 1, f"Got {contracts} for stop={stop}"
+            assert contracts == 0
 
-    def test_never_returns_negative(self, sizer):
-        for stop in [-10.0, -0.25, 0.0]:
-            contracts = sizer.calculate(stop_distance_points=stop)
-            assert contracts > 0
+    def test_dollars_per_point_is_configurable(self):
+        """Non-MES point value changes minimum-contract risk calculation."""
+        sizer = PositionSizer(risk_per_trade=20, dollars_per_point=10.0)
+        result = sizer.calculate_with_risk_gate(stop_distance_points=2.0)
+
+        assert result.allowed is True
+        assert result.quantity == 1
+        assert result.risk_per_contract == pytest.approx(20.0)
 
 
 # ── Input validation ────────────────────────────────────────────────────

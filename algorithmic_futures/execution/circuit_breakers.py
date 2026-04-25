@@ -32,13 +32,13 @@ from config import (
     DAILY_PROFIT_HALT,
     EOD_CLOSE,
     LAST_ENTRY_CUTOFF,
-    MAX_LOSS_LIMIT,
     MLL_PROXIMITY_BUFFER,
     ORB_TRADES_PER_DAY,
     TIMEZONE,
     VWAP_TRADES_PER_DAY,
 )
 from regime.regime_state import BreakerType, RegimeState
+from risk.account_state import AccountRiskSnapshot
 
 logger = logging.getLogger(__name__)
 
@@ -138,17 +138,19 @@ class CircuitBreakers:
                 ))
 
         # 5. MLL proximity warning (sizing reduction, not a hard halt)
-        # Trailing drawdown framing:
-        #   drawdown = high_water_mark - current_balance
-        #   distance_to_mll = MAX_LOSS_LIMIT - drawdown
-        if account_high_water_mark > 0:
-            drawdown = max(0.0, account_high_water_mark - account_balance)
-            distance_to_mll = MAX_LOSS_LIMIT - drawdown
+        if account_high_water_mark > 0 or account_balance > 0:
+            account_risk = AccountRiskSnapshot(
+                account_balance=account_balance,
+                account_high_water_mark=account_high_water_mark,
+                daily_realized_pnl=daily_pnl,
+                cumulative_realized_pnl=cumulative_pnl,
+            )
+            distance_to_mll = account_risk.remaining_mll_headroom
             if distance_to_mll <= MLL_PROXIMITY_BUFFER:
                 mll_proximity = True
                 logger.warning(
-                    "MLL proximity: drawdown $%.0f, distance-to-MLL $%.0f <= $%d",
-                    drawdown, distance_to_mll, MLL_PROXIMITY_BUFFER,
+                    "MLL proximity: floor $%.0f, distance-to-MLL $%.0f <= $%d",
+                    account_risk.current_mll_floor, distance_to_mll, MLL_PROXIMITY_BUFFER,
                 )
 
         # 6. Trade count cap

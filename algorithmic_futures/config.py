@@ -54,6 +54,8 @@ CONSISTENCY_CAP: dict[str, float] = {
 RISK_PER_TRADE_MIN: int = 20             # 1 % of MLL
 RISK_PER_TRADE_MAX: int = 40             # 2 % of MLL
 RISK_PER_TRADE: int     = 20             # Default starting risk
+MIN_CONTRACT_RISK_SAFETY_FRACTION: float = 1.0  # Fraction of remaining risk budget one contract may consume
+MAX_TRADE_RISK_FRACTION_OF_MLL_HEADROOM: float = 0.10  # Projected trade loss cap vs MLL headroom
 
 # ── Instrument ──────────────────────────────────────────────────────────
 INSTRUMENT: str     = "MES"
@@ -82,6 +84,7 @@ API_BACKOFF_BASE_SEC: float   = 1.0       # Base delay for backoff
 # NOTE: These VWAP_SD_* thresholds are for the legacy VWAPMeanReversion
 # strategy ONLY.  The MR pipeline (MRSignalEngine + MRExitSimulator)
 # uses MR_SIGMA_ENTRY / MR_SIGMA_EXTREME below — NOT these values.
+USE_RESEARCH_MR_ENGINE: bool = True      # True routes live MR through MRSignalEngine adapter
 VWAP_SD_ENTRY_MIN: float     = 2.5       # Min SD band for entry (legacy VWAP strategy)
 VWAP_SD_ENTRY_MAX: float     = 3.0       # Max SD band for entry (legacy VWAP strategy)
 VWAP_STOP_ATR_MULT: float   = 1.5       # Stop = 1.5× 5-min ATR beyond entry

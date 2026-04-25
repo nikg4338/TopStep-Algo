@@ -28,10 +28,13 @@ from typing import Any
 import pytz
 
 from config import (
+    DAILY_LOSS_LIMIT_INTERNAL,
     EOD_CLOSE,
     EXECUTION_MODE,
     INSTRUMENT,
     LOG_DIR,
+    MAX_TRADE_RISK_FRACTION_OF_MLL_HEADROOM,
+    MIN_CONTRACT_RISK_SAFETY_FRACTION,
     ORDER_FILL_TIMEOUT_SEC,
     POINT_VALUE,
     TICK_SIZE,
@@ -41,6 +44,7 @@ from config import (
 from execution.api_client import OrderResponse, ProjectXClient
 from execution.circuit_breakers import BreakerCheckResult, CircuitBreakers
 from regime.regime_state import OrderSide, OrderStatus, RegimeState
+from risk.account_state import AccountRiskSnapshot
 from risk.position_sizer import PositionSizer
 
 logger = logging.getLogger(__name__)
@@ -126,6 +130,17 @@ class OrderManager:
         self.sizer = sizer
         self.state = state
         self._trade_log: list[TradeRecord] = []
+        self._rejection_log: list[dict[str, Any]] = []
+
+    @property
+    def rejection_log(self) -> list[dict[str, Any]]:
+        return list(self._rejection_log)
+
+    @property
+    def last_rejection_reason(self) -> str:
+        if not self._rejection_log:
+            return ""
+        return str(self._rejection_log[-1].get("reason", ""))
 
     # ── public API ──────────────────────────────────────────────────────
 
@@ -160,25 +175,68 @@ class OrderManager:
             logger.warning(
                 "Entry REJECTED by circuit breakers: %s", check.reasons
             )
+            self._record_rejection(
+                stage="circuit_breakers",
+                reason="; ".join(check.reasons),
+                metadata={"strategy": strategy, "regime": regime.name},
+            )
             return None
 
         # ── Step 1b: no duplicate position (OE-05) ─────────────────────
         if self.state.open_position is not None:
             logger.warning("Entry REJECTED — existing position open")
+            self._record_rejection(
+                stage="position_check",
+                reason="EXISTING_POSITION_OPEN",
+                metadata={"strategy": strategy, "regime": regime.name},
+            )
             return None
+
+        # ── Step 2: position sizing ─────────────────────────────────────
+        stop_distance = abs(entry_price - stop_price)
+        account_risk = self._account_risk_snapshot()
+        sizing = self.sizer.calculate_with_risk_gate(
+            stop_distance_points=stop_distance,
+            mll_proximity=check.mll_proximity,
+            remaining_daily_loss_budget=self._remaining_daily_loss_budget(),
+            remaining_mll_headroom=account_risk.remaining_mll_headroom,
+            safety_fraction=MIN_CONTRACT_RISK_SAFETY_FRACTION,
+            mll_headroom_safety_fraction=MAX_TRADE_RISK_FRACTION_OF_MLL_HEADROOM,
+        )
+        if not sizing.allowed:
+            logger.warning("Entry REJECTED by position sizer: %s", sizing.rejection_reason)
+            self._record_rejection(
+                stage="position_sizer",
+                reason=sizing.rejection_reason,
+                metadata={
+                    "strategy": strategy,
+                    "regime": regime.name,
+                    "stop_distance_points": stop_distance,
+                    "risk_per_contract": sizing.risk_per_contract,
+                    "max_allowed_trade_risk": sizing.max_allowed_trade_risk,
+                    "remaining_daily_loss_budget": sizing.remaining_daily_loss_budget,
+                    "remaining_mll_headroom": sizing.remaining_mll_headroom,
+                    "safety_fraction": sizing.safety_fraction,
+                    "mll_headroom_safety_fraction": sizing.mll_headroom_safety_fraction,
+                    "projected_trade_risk": sizing.projected_trade_risk,
+                    "current_equity": account_risk.current_equity,
+                    "current_mll_floor": account_risk.current_mll_floor,
+                    "account_high_water_mark": account_risk.effective_high_water_mark,
+                },
+            )
+            return None
+        qty = sizing.quantity
 
         # Verify with broker
         positions = self.api.get_positions()
         if any(p.qty != 0 for p in positions):
             logger.warning("Entry REJECTED — broker reports open position")
+            self._record_rejection(
+                stage="position_check",
+                reason="BROKER_POSITION_OPEN",
+                metadata={"strategy": strategy, "regime": regime.name},
+            )
             return None
-
-        # ── Step 2: position sizing ─────────────────────────────────────
-        stop_distance = abs(entry_price - stop_price)
-        qty = self.sizer.calculate(
-            stop_distance_points=stop_distance,
-            mll_proximity=check.mll_proximity,
-        )
 
         # ── Step 3: place entry order ───────────────────────────────────
         trade_id = f"{now.strftime('%Y%m%d_%H%M%S')}_{strategy}"
@@ -478,6 +536,28 @@ class OrderManager:
         }
 
     # ── helpers ─────────────────────────────────────────────────────────
+
+    def _record_rejection(
+        self,
+        *,
+        stage: str,
+        reason: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        self._rejection_log.append(
+            {
+                "timestamp": datetime.now(ET).isoformat(),
+                "stage": stage,
+                "reason": reason,
+                "metadata": metadata or {},
+            }
+        )
+
+    def _remaining_daily_loss_budget(self) -> float:
+        return max(0.0, DAILY_LOSS_LIMIT_INTERNAL + self.state.daily_pnl)
+
+    def _account_risk_snapshot(self) -> AccountRiskSnapshot:
+        return AccountRiskSnapshot.from_session_state(self.state)
 
     def _find_trade(self, trade_id: str) -> TradeRecord | None:
         for t in self._trade_log:

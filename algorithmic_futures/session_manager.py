@@ -43,16 +43,18 @@ from config import (
     RTH_OPEN,
     STATE_FILE,
     TIMEZONE,
+    USE_RESEARCH_MR_ENGINE,
     VWAP_BAR_INTERVAL_MIN,
 )
-from data.indicators import FeatureBuilder
+from data.indicators import ATRCalculator, FeatureBuilder, VWAPCalculator
 from data.market_data import Bar, DailyDataProvider, IntradayBarAggregator
 from execution.api_client import ProjectXClient
 from execution.circuit_breakers import CircuitBreakers
 from execution.order_manager import OrderManager, SessionState
 from regime.hmm_classifier import RegimeClassifier
-from regime.regime_state import ChallengeStatus, RegimeState
+from regime.regime_state import ChallengeStatus, OrderSide, RegimeState
 from risk.position_sizer import PositionSizer
+from strategies.signal_adapter import SignalAdapter, SignalContext
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +96,9 @@ class SessionManager:
         # ── Strategies (lazily initialised; import at runtime) ──────────
         self._vwap_strategy: Any = None
         self._orb_strategy: Any = None
+        self._mr_signal_adapter: SignalAdapter | None = None
+        self._research_vwap = VWAPCalculator()
+        self._research_atr = ATRCalculator(period=14)
 
         # ── Scheduler ──────────────────────────────────────────────────
         self._scheduler: AsyncIOScheduler | None = None
@@ -292,21 +297,34 @@ class SessionManager:
     def _init_strategies(self, regime: RegimeState) -> None:
         """Create / reset strategy instances based on current regime."""
         try:
-            from strategies import VWAPMeanReversion, ORBBreakout  # type: ignore[import-untyped]
+            from strategies.orb_breakout import ORBBreakout
+            from strategies.vwap_mean_reversion import VWAPMeanReversion
 
-            self._vwap_strategy = VWAPMeanReversion(
-                order_manager=self.order_manager,
-                state=self.state,
-            )
             self._orb_strategy = ORBBreakout(
                 order_manager=self.order_manager,
                 state=self.state,
             )
-            self._vwap_strategy.reset()
             self._orb_strategy.reset()
 
+            if USE_RESEARCH_MR_ENGINE:
+                self._mr_signal_adapter = SignalAdapter(engine="mr")
+                self._mr_signal_adapter.reset()
+                self._research_vwap.reset()
+                self._research_atr.reset()
+                self._vwap_strategy = None
+                mr_strategy_name = "MRSignalEngine adapter"
+            else:
+                self._vwap_strategy = VWAPMeanReversion(
+                    order_manager=self.order_manager,
+                    state=self.state,
+                )
+                self._vwap_strategy.reset()
+                self._mr_signal_adapter = None
+                mr_strategy_name = "legacy VWAP"
+
             logger.info(
-                "Strategies initialised: VWAP (State 0), ORB (State 1), CRISIS → skip (State 2)"
+                "Strategies initialised: %s (State 0), ORB (State 1), CRISIS -> skip (State 2)",
+                mr_strategy_name,
             )
         except ImportError:
             logger.warning(
@@ -315,6 +333,7 @@ class SessionManager:
             )
             self._vwap_strategy = None
             self._orb_strategy = None
+            self._mr_signal_adapter = None
 
     # ── Market Data Stream ──────────────────────────────────────────────
 
@@ -384,10 +403,12 @@ class SessionManager:
 
         try:
             if regime == RegimeState.BALANCED:
-                if self._vwap_strategy is not None:
+                if self._mr_signal_adapter is not None:
+                    self._on_research_mr_bar(bar)
+                elif self._vwap_strategy is not None:
                     self._vwap_strategy.on_bar(bar, regime)
                 else:
-                    logger.debug("VWAP strategy not loaded — skipping bar")
+                    logger.debug("MR strategy not loaded — skipping bar")
 
             elif regime == RegimeState.DIRECTIONAL:
                 if self._orb_strategy is not None:
@@ -409,6 +430,48 @@ class SessionManager:
             self.order_manager.save_state()
         except Exception:
             logger.exception("Error saving state after bar")
+
+    def _on_research_mr_bar(self, bar: Bar) -> None:
+        """Route a balanced-regime bar through the shared MR signal adapter."""
+        if self._mr_signal_adapter is None:
+            return
+
+        vwap_state = self._research_vwap.update(bar.high, bar.low, bar.close, bar.volume)
+        atr_value = self._research_atr.update(bar.high, bar.low, bar.close)
+        context = SignalContext(
+            regime="range",
+            vwap_state=vwap_state,
+            atr=atr_value,
+            adx=0.0,
+            metadata={"source": "live_session_manager"},
+        )
+        decision = self._mr_signal_adapter.on_bar(bar, context)
+
+        if decision is None or not decision.approved:
+            return
+
+        metadata = {
+            "signal_engine": decision.engine,
+            "signal_type": decision.signal_type,
+            "rejection_reason": decision.rejection_reason,
+            "band_level_hit": decision.band_level_hit,
+            "vwap_at_signal": round(decision.vwap_at_signal, 4),
+            "sigma_at_signal": round(decision.sigma_at_signal, 4),
+            "z_at_signal": round(decision.z_at_signal, 4),
+            "bar_index": decision.bar_index,
+            "bar_timestamp": str(bar.timestamp),
+            **decision.metadata,
+        }
+
+        self.order_manager.submit_entry(
+            side=OrderSide(decision.side),
+            stop_price=decision.stop_reference,
+            target_price=decision.target_reference,
+            entry_price=decision.entry_reference_price,
+            strategy="VWAP_MR",
+            regime=RegimeState.BALANCED,
+            metadata=metadata,
+        )
 
     # ── EOD Hard Close (16:05 ET) ───────────────────────────────────────
 
